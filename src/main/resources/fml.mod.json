@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"id": "Schematica_survival",
+	"version": "${version}",
+	"depends": {
+		"fishmodloader": ">=3.4.2"
+	},
+	"environment": "*",
+	"name": "Schematica_survival",
+	"description": "",
+	"authors": ["hahahha"],
+	"entrypoints": {
+		"main": ["com.github.lunatrius.schematica.SchematicaSurvival"]
+	},
+	"mixins": [
+		"schematica_survival.mixins.json"
+	],
+	"accessWidener": "schematica_survival.accesswidener"
+}
