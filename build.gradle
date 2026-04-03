@@ -1,68 +1,57 @@
 plugins {
-    // 使用FML Loom插件，版本0.1.local（本地）
-    id 'fml-loom' version '0.1.local'
-    id 'maven-publish'  // 用于发布模组到Maven仓库
+    id 'fml-loom' version '0.1'
+    id 'maven-publish'
 }
 
-// 从gradle.properties中读取版本和组
 version = project.mod_version
 group = project.maven_group
 
 base {
-    archivesName = "[投影生存版]"+project.archives_base_name
+    archivesName = "[投影生存版]" + project.archives_base_name
 }
 
 repositories {
-    mavenLocal()        // 本地Maven仓库
     maven {
-        name = "Spongepowered"
-        url = "https://repo.spongepowered.org/repository/maven-public/"
+        name = "ModdedMITE"
+        url = uri("https://maven.limingzxc.top/repository/maven-public/")
     }
 }
 
+configurations {
+    fml
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+    fml "com.github.MinecraftIsTooEasy:FishModLoader:3.4.2"
+    implementation "com.github.MinecraftIsTooEasy:FishModLoader:3.4.2"
+
+    implementation "com.github.MinecraftIsTooEasy:RustedIronCore:1.5.0"
+}
+
+def fmlResolvedFile = configurations.fml.files.iterator().next()
+
 loom {
-    // 访问宽限器文件路径
+    if (System.getProperty("os.name").toLowerCase().contains("mac")) {
+        runConfigs.named("client").get().getVmArgs().remove("-XstartOnFirstThread")
+    }
+
     accessWidenerPath = file("src/main/resources/schematica_survival.accesswidener")
-    // 合并Minecraft服务端和客户端jar
     mergedMinecraftJar()
-    // 设置FML加载器的路径（你的本地FML文件）
-    setFML(new File("F:\\mitemod\\fml\\FishModLoader-v3.4.2.jar"))
-    // 定义模组
+
     mods {
-        "Schematica_survival" {
+        "Schematica_Survival" {
             sourceSet sourceSets.main
         }
     }
-    runs {
-        client {
-            // 运行时添加RustedIronCore模组到环境
-            property "fml.modFolders", "rusted_iron_core=../RustedIronCore/build/libs/RustedIronCore-1.0.0.jar"
-        }
-    }
 }
 
-// 可选：自定义客户端运行参数
-//runClient {
-//    args("--username", "hahahha", "--session", "a.a.a.a", "--width", 854, "--height", 480)
-//}
-
-dependencies {
-    // Minecraft依赖
-    minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    // 使用FML提供的MCP映射
-    mappings loom.fmlMCPMappings()
-    // Fabric Loader
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-
-    // 本地依赖：RustedIronCore和ManyLib的jar文件
-    implementation files('libs/RustedIronCore-1.5.0.jar')
-    implementation files('libs/ManyLib-2.3.0.jar')
-    // FML加载器本身
-    implementation files(loom.getFML().toPath())
-}
+loom.setFML(fmlResolvedFile)
+dependencies.add("mappings", loom.fmlMCPMappings())
 
 processResources {
-    // 处理资源文件时，将fml.mod.json中的${version}替换为实际版本
     inputs.property "version", project.version
 
     filesMatching("fml.mod.json") {
@@ -70,35 +59,46 @@ processResources {
     }
 }
 
-// 设置Java编译版本为17
 tasks.withType(JavaCompile).configureEach {
     it.options.release = 17
 }
 
 java {
-    withSourcesJar()  // 生成源码jar
+    withSourcesJar()
 
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
 }
 
 jar {
-    // jar打包配置（可留空）
 }
 
-// 发布配置
+tasks.named('runClient', JavaExec).configure { exec ->
+    def user = project.hasProperty('username') ? project.username : 'Dev'
+    exec.setArgs(['--username', user, '--session', '0', '--width', '854', '--height', '480'])
+}
+
+// configure the maven publication
 publishing {
     publications {
         mavenJava(MavenPublication) {
+            groupId = project.maven_group
+            artifactId = project.archives_base_name
+            version = project.mod_version
             from components.java
         }
     }
 
+    // See https://docs.gradle.org/current/userguide/publishing_maven.html for information on how to set up publishing.
     repositories {
-        mavenLocal()
         maven {
-            name = "Fabric"
-            url = "https://maven.fabricmc.net/"
+            name = "ModdedMITE"
+            url = uri("https://maven.limingzxc.top/repository/maven-releases/")
+            credentials {
+                // Read only from gradle.properties (user level, your gradle_home)
+                username = project.findProperty("nexusUsername")
+                password = project.findProperty("nexusPassword")
+            }
         }
     }
 }
