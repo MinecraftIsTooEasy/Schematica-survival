@@ -1,8 +1,11 @@
 package com.github.lunatrius.schematica.client.gui;
 
 import com.github.lunatrius.schematica.FileFilterSchematic;
+import com.github.lunatrius.schematica.SchematicaPrinterConfig;
 import com.github.lunatrius.schematica.SchematicaRuntime;
 import com.github.lunatrius.schematica.api.ISchematic;
+import com.github.lunatrius.schematica.block.SchematicaBlocks;
+import com.github.lunatrius.schematica.network.SchematicaPrinterNetworking;
 import com.github.lunatrius.schematica.util.I18n;
 import com.github.lunatrius.schematica.world.schematic.SchematicFormat;
 import java.io.File;
@@ -37,6 +40,8 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
     private static final int ID_MIRROR_X = 8;
     private static final int ID_MIRROR_Z = 9;
     private static final int ID_UNDO = 10;
+    private static final int ID_ALPHA_DOWN = 11;
+    private static final int ID_ALPHA_UP = 12;
     private static final int ID_SUPPLY_BASE = 1000;
 
     private static final int SUPPLY_VISIBLE_ROWS = 6;
@@ -46,8 +51,10 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
     private static final int PANEL_WIDTH = 404;
     private static final int PANEL_HEIGHT = 344;
     private static final int PANEL_TOP_OFFSET = 172;
+    private static final long SERVER_SNAPSHOT_MAX_AGE_MS = 300_000L;
+    private static final long PRINT_COMPLETE_TIMEOUT_MS = 300000L;
 
-    private static final Map<String, String> LAST_SELECTED_FILE_BY_POS = new HashMap<String, String>();
+    private static final Map<String, PrinterGuiState> LAST_STATE_BY_POS = new HashMap<String, PrinterGuiState>();
 
     private final int blockX;
     private final int blockY;
@@ -61,6 +68,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
     private int previewWidth;
     private int previewHeight;
     private int previewLength;
+    private String confirmedFileName;
     private int rotationDegrees;
     private boolean mirrorX;
     private boolean mirrorZ;
@@ -69,7 +77,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
     private float supplyScrollProgress;
     private boolean supplyScrollDragging;
     private long lastSupplyRefreshAtMs;
-
+    private long lastSupplyRequestAtMs;
     private int supplyListLeft;
     private int supplyListTop;
     private int supplyButtonWidth;
@@ -77,6 +85,10 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
     private int supplyScrollBarTop;
     private int supplyScrollBarWidth;
     private int supplyScrollBarHeight;
+    private boolean closeSyncApplied;
+    private boolean awaitingPrintCompletion;
+    private long awaitingPrintStartedAtMs;
+    private String awaitingPrintConfirmedFile;
 
     public GuiSchematicPrinterSelector(int blockX, int blockY, int blockZ) {
         this.blockX = blockX;
@@ -87,6 +99,10 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
     @Override
     public void initGui() {
         Keyboard.enableRepeatEvents(true);
+        this.closeSyncApplied = false;
+        this.awaitingPrintCompletion = false;
+        this.awaitingPrintStartedAtMs = 0L;
+        this.awaitingPrintConfirmedFile = null;
         this.buttonList.clear();
         this.supplyButtons.clear();
 
@@ -98,14 +114,16 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         this.buttonList.add(new GuiButton(ID_PREV, panelLeft + 12, row1, 34, 20, "<"));
         this.buttonList.add(new GuiButton(ID_NEXT, panelLeft + 52, row1, 34, 20, ">"));
         this.buttonList.add(new GuiButton(ID_RESCAN, panelLeft + 92, row1, 78, 20, tr("gui.schematica_printer.button.rescan", "Rescan")));
-        this.buttonList.add(new GuiButton(ID_LOAD, panelLeft + 176, row1, 116, 20, tr("gui.schematica_printer.button.load", "Load Outline")));
+        this.buttonList.add(new GuiButton(ID_LOAD, panelLeft + 176, row1, 116, 20, tr("gui.schematica_printer.button.load", "Confirm & Load")));
         this.buttonList.add(new GuiButton(ID_CLOSE, panelLeft + 298, row1, 94, 20, tr("gui.schematica_printer.button.close", "Close")));
 
-        this.buttonList.add(new GuiButton(ID_ROTATE, panelLeft + 12, row2, 72, 20, ""));
-        this.buttonList.add(new GuiButton(ID_MIRROR_X, panelLeft + 90, row2, 72, 20, ""));
-        this.buttonList.add(new GuiButton(ID_MIRROR_Z, panelLeft + 168, row2, 72, 20, ""));
-        this.buttonList.add(new GuiButton(ID_UNDO, panelLeft + 246, row2, 72, 20, tr("gui.schematica_printer.button.undo", "Undo")));
-        this.buttonList.add(new GuiButton(ID_PRINT, panelLeft + 324, row2, 72, 20, tr("gui.schematica_printer.button.print", "Print")));
+        this.buttonList.add(new GuiButton(ID_ROTATE, panelLeft + 12, row2, 60, 20, ""));
+        this.buttonList.add(new GuiButton(ID_MIRROR_X, panelLeft + 76, row2, 60, 20, ""));
+        this.buttonList.add(new GuiButton(ID_MIRROR_Z, panelLeft + 140, row2, 60, 20, ""));
+        this.buttonList.add(new GuiButton(ID_ALPHA_DOWN, panelLeft + 204, row2, 32, 20, "Op-"));
+        this.buttonList.add(new GuiButton(ID_ALPHA_UP, panelLeft + 240, row2, 32, 20, "Op+"));
+        this.buttonList.add(new GuiButton(ID_UNDO, panelLeft + 276, row2, 64, 20, tr("gui.schematica_printer.button.undo", "Undo")));
+        this.buttonList.add(new GuiButton(ID_PRINT, panelLeft + 344, row2, 48, 20, tr("gui.schematica_printer.button.print", "Print")));
 
         this.supplyListLeft = panelLeft + 12;
         this.supplyListTop = panelTop + 182;
@@ -121,9 +139,12 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         this.supplyScrollBarWidth = this.supplyButtonWidth;
         this.supplyScrollBarHeight = 12;
 
+        restoreCachedState();
         updateTransformButtonLabels();
+        updateAlphaButtonLabels();
         refreshSchematicFiles();
         refreshSupplyEntries(true);
+        requestPrinterInventorySnapshot();
     }
 
     @Override
@@ -143,7 +164,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
                 cycleSelection(1);
                 return;
             case ID_LOAD:
-                loadProjection(false);
+                confirmSelectedProjection(true);
                 return;
             case ID_PRINT:
                 printNorth();
@@ -160,13 +181,21 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             case ID_MIRROR_X:
                 this.mirrorX = !this.mirrorX;
                 updateTransformButtonLabels();
+                cacheCurrentState(false);
                 return;
             case ID_MIRROR_Z:
                 this.mirrorZ = !this.mirrorZ;
                 updateTransformButtonLabels();
+                cacheCurrentState(false);
                 return;
             case ID_UNDO:
                 runUndo();
+                return;
+            case ID_ALPHA_DOWN:
+                adjustProjectionAlpha(-0.05F);
+                return;
+            case ID_ALPHA_UP:
+                adjustProjectionAlpha(0.05F);
                 return;
             default:
         }
@@ -190,6 +219,10 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             refreshSchematicFiles();
             return;
         }
+        if (keyCode == Keyboard.KEY_C) {
+            confirmSelectedProjection(true);
+            return;
+        }
         if (keyCode == Keyboard.KEY_G) {
             cycleRotation();
             return;
@@ -197,15 +230,17 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         if (keyCode == Keyboard.KEY_X) {
             this.mirrorX = !this.mirrorX;
             updateTransformButtonLabels();
+            cacheCurrentState(false);
             return;
         }
         if (keyCode == Keyboard.KEY_Z) {
             this.mirrorZ = !this.mirrorZ;
             updateTransformButtonLabels();
+            cacheCurrentState(false);
             return;
         }
         if (keyCode == Keyboard.KEY_L) {
-            loadProjection(false);
+            confirmSelectedProjection(true);
             return;
         }
         if (keyCode == Keyboard.KEY_P) {
@@ -214,6 +249,14 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         }
         if (keyCode == Keyboard.KEY_U) {
             runUndo();
+            return;
+        }
+        if (keyCode == Keyboard.KEY_MINUS || keyCode == Keyboard.KEY_SUBTRACT || keyCode == Keyboard.KEY_N) {
+            adjustProjectionAlpha(-0.05F);
+            return;
+        }
+        if (keyCode == Keyboard.KEY_EQUALS || keyCode == Keyboard.KEY_ADD || keyCode == Keyboard.KEY_B) {
+            adjustProjectionAlpha(0.05F);
             return;
         }
         if (keyCode == Keyboard.KEY_UP) {
@@ -225,7 +268,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             return;
         }
         if (keyCode == Keyboard.KEY_RETURN || keyCode == Keyboard.KEY_NUMPADENTER) {
-            loadProjection(true);
+            confirmSelectedProjection(true);
             return;
         }
         super.keyTyped(character, keyCode);
@@ -259,7 +302,10 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
     @Override
     public void updateScreen() {
         super.updateScreen();
+        long now = System.currentTimeMillis();
+        handlePendingPrintCompletion(now);
         refreshSupplyEntries(false);
+        updateAlphaButtonLabels();
     }
 
     @Override
@@ -293,15 +339,20 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             this.drawCenteredString(this.fontRenderer, tr("gui.schematica_printer.no_files", "No schematic files found in /schematics"), centerX, textTop + 36, 0xFF7777);
         } else {
             String selected = this.schematicFiles.get(this.selectedFileIndex);
-            String dimensions = this.previewWidth > 0 && this.previewHeight > 0 && this.previewLength > 0
+            String confirmed = hasConfirmedSelection() ? this.confirmedFileName : tr("gui.schematica_printer.value.none", "<none>");
+            String dimensions = hasConfirmedSelection() && this.previewWidth > 0 && this.previewHeight > 0 && this.previewLength > 0
                     ? trf("gui.schematica_printer.dimensions", " (%dx%dx%d)", this.previewWidth, this.previewHeight, this.previewLength)
                     : "";
             this.drawCenteredString(this.fontRenderer,
-                    trf("gui.schematica_printer.selected_line", "Selected: %d/%d  %s%s",
-                            this.selectedFileIndex + 1, this.schematicFiles.size(), selected, dimensions),
+                    trf("gui.schematica_printer.selected_line", "Candidate: %d/%d  %s",
+                            this.selectedFileIndex + 1, this.schematicFiles.size(), selected),
                     centerX, textTop + 36, 0xC6FFB7);
+            this.drawCenteredString(this.fontRenderer,
+                    trf("gui.schematica_printer.confirmed_line", "Confirmed: %s%s",
+                            confirmed, dimensions),
+                    centerX, textTop + 52, hasConfirmedSelection() ? 0x9CD7FF : 0xAAAAAA);
 
-            if (this.previewWidth > 0 && this.previewLength > 0) {
+            if (hasConfirmedSelection() && this.previewWidth > 0 && this.previewLength > 0) {
                 int transformedWidth = getTransformedWidth(this.previewWidth, this.previewLength);
                 int transformedLength = getTransformedLength(this.previewWidth, this.previewLength);
                 int originX = this.blockX - transformedWidth / 2;
@@ -310,16 +361,26 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
                 this.drawCenteredString(this.fontRenderer,
                         trf("gui.schematica_printer.transform_line", "Transform: rot=%d  mirrorX=%s  mirrorZ=%s",
                                 this.rotationDegrees, onOff(this.mirrorX), onOff(this.mirrorZ)),
-                        centerX, textTop + 54, 0xFFD37A);
+                        centerX, textTop + 68, 0xFFD37A);
                 this.drawCenteredString(this.fontRenderer,
                         trf("gui.schematica_printer.origin_line", "North print origin: [%d,%d,%d]", originX, originY, originZ),
-                        centerX, textTop + 70, 0x9CD7FF);
+                        centerX, textTop + 82, 0x9CD7FF);
             }
         }
+        this.drawCenteredString(
+                this.fontRenderer,
+                trf(
+                        "gui.schematica_printer.opacity_line",
+                        "Projection opacity: ghost=%d%%  line=%d%%  (- / =)",
+                        alphaPercent(SchematicaPrinterConfig.getProjectionGhostAlphaSolid()),
+                        alphaPercent(SchematicaPrinterConfig.getProjectionLineAlpha())),
+                centerX,
+                textTop + 100,
+                0x8EC8FF);
 
         this.drawCenteredString(
                 this.fontRenderer,
-                tr("gui.schematica_printer.hotkeys", "Enter/L load outline  P print  U undo  [ ] cycle  G/X/Z transform"),
+                tr("gui.schematica_printer.hotkeys", "Enter/L confirm+load  C confirm+load  P print  U undo  [ ] cycle  G/X/Z transform  -/= opacity"),
                 centerX,
                 textTop + 130,
                 0xAAAAAA
@@ -365,6 +426,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
 
     @Override
     public void onGuiClosed() {
+        applyCloseSyncIfNeeded();
         Keyboard.enableRepeatEvents(false);
     }
 
@@ -378,7 +440,8 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         if (this.selectedFileIndex >= 0 && this.selectedFileIndex < this.schematicFiles.size()) {
             previousSelection = this.schematicFiles.get(this.selectedFileIndex);
         }
-        String remembered = LAST_SELECTED_FILE_BY_POS.get(positionKey());
+        PrinterGuiState cachedState = LAST_STATE_BY_POS.get(positionKey());
+        String remembered = cachedState != null ? cachedState.selectedFile : null;
 
         this.schematicFiles.clear();
         File[] files = getSchematicDir().listFiles(new FileFilterSchematic(false));
@@ -394,11 +457,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
 
         if (this.schematicFiles.isEmpty()) {
             this.selectedFileIndex = -1;
-            this.previewWidth = 0;
-            this.previewHeight = 0;
-            this.previewLength = 0;
-            this.requiredMaterials.clear();
-            this.supplyEntries.clear();
+            clearConfirmedSelection(false);
             this.statusLine = tr("gui.schematica_printer.status.put_files", "Put .schematic files into /schematics.");
             updateSupplyButtons();
             return;
@@ -416,7 +475,17 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         }
 
         selectIndex(targetIndex);
-        this.statusLine = tr("gui.schematica_printer.status.select_load", "Select file, press Enter/L to load outline, then P to print.");
+        if (hasConfirmedSelection()) {
+            if (this.schematicFiles.indexOf(this.confirmedFileName) >= 0) {
+                updatePreview(this.confirmedFileName);
+            } else {
+                clearConfirmedSelection(false);
+            }
+        } else {
+            clearPreviewAndMaterials();
+        }
+        refreshSupplyEntries(true);
+        this.statusLine = tr("gui.schematica_printer.status.select_confirm", "Select file, press Enter/L to confirm+load projection.");
     }
 
     private void cycleSelection(int delta) {
@@ -438,11 +507,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
     private void selectIndex(int index) {
         if (this.schematicFiles.isEmpty()) {
             this.selectedFileIndex = -1;
-            this.previewWidth = 0;
-            this.previewHeight = 0;
-            this.previewLength = 0;
-            this.requiredMaterials.clear();
-            this.supplyEntries.clear();
+            clearPreviewAndMaterials();
             updateSupplyButtons();
             return;
         }
@@ -454,11 +519,8 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             safeIndex = this.schematicFiles.size() - 1;
         }
         this.selectedFileIndex = safeIndex;
-
-        String selected = this.schematicFiles.get(this.selectedFileIndex);
-        LAST_SELECTED_FILE_BY_POS.put(positionKey(), selected);
-        updatePreview(selected);
-        refreshSupplyEntries(true);
+        cacheCurrentState(false);
+        this.statusLine = tr("gui.schematica_printer.status.select_confirm", "Select file, press Enter/L to confirm+load projection.");
     }
 
     private void updatePreview(String selectedFileName) {
@@ -480,6 +542,28 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         rebuildRequiredMaterials(schematic);
     }
 
+    private void clearPreviewAndMaterials() {
+        this.previewWidth = 0;
+        this.previewHeight = 0;
+        this.previewLength = 0;
+        this.requiredMaterials.clear();
+        this.supplyEntries.clear();
+        updateSupplyButtons();
+    }
+
+    private void clearConfirmedSelection(boolean keepCursorSelection) {
+        cancelAwaitingPrintCompletion();
+        this.confirmedFileName = null;
+        clearPreviewAndMaterials();
+        cacheCurrentState(false);
+        if (!keepCursorSelection) {
+            return;
+        }
+        if (!hasValidSelection() && !this.schematicFiles.isEmpty()) {
+            this.selectedFileIndex = 0;
+        }
+    }
+
     private void rebuildRequiredMaterials(ISchematic schematic) {
         rebuildRequiredMaterials(schematic, null, 0, 0, 0, false);
     }
@@ -490,6 +574,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             return;
         }
         Map<MaterialKey, RequiredMaterial> merged = new HashMap<MaterialKey, RequiredMaterial>();
+        int requiredBlocks = 0;
         for (int x = 0; x < schematic.getWidth(); ++x) {
             for (int y = 0; y < schematic.getHeight(); ++y) {
                 for (int z = 0; z < schematic.getLength(); ++z) {
@@ -524,25 +609,129 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
                         merged.put(key, material);
                     }
                     material.required += Math.max(1, cost.stackSize);
+                    ++requiredBlocks;
                 }
+            }
+        }
+
+        int requiredEmeralds = SchematicaPrinterConfig.computeRequiredEmeralds(requiredBlocks);
+        if (requiredEmeralds > 0) {
+            int emeraldItemId = SchematicaPrinterConfig.getEmeraldItemId();
+            int emeraldSubtype = SchematicaPrinterConfig.getEmeraldSubtype();
+            if (emeraldItemId > 0 && emeraldItemId < Item.itemsList.length && Item.itemsList[emeraldItemId] != null) {
+                MaterialKey emeraldKey = new MaterialKey(emeraldItemId, emeraldSubtype);
+                RequiredMaterial emeraldMaterial = merged.get(emeraldKey);
+                if (emeraldMaterial == null) {
+                    ItemStack display = new ItemStack(Item.itemsList[emeraldItemId], 1, emeraldSubtype);
+                    emeraldMaterial = new RequiredMaterial(emeraldKey, display.getDisplayName());
+                    merged.put(emeraldKey, emeraldMaterial);
+                }
+                emeraldMaterial.required += requiredEmeralds;
             }
         }
         this.requiredMaterials.addAll(merged.values());
     }
 
+    private void confirmSelectedProjection(boolean fromConfirmKey) {
+        cancelAwaitingPrintCompletion();
+        if (!hasValidSelection()) {
+            this.statusLine = tr("gui.schematica_printer.status.no_selection", "No schematic selected.");
+            return;
+        }
+        this.confirmedFileName = this.schematicFiles.get(this.selectedFileIndex);
+        cacheCurrentState(false);
+        loadProjection(fromConfirmKey);
+    }
+
     private void printNorth() {
+        cancelAwaitingPrintCompletion();
+        if (getPrinterInventory() == null) {
+            this.statusLine = tr("gui.schematica_printer.supply.no_printer", "Printer block is missing or invalid.");
+            return;
+        }
         if (!loadProjection(false)) {
             return;
         }
+        if (!SchematicaPrinterNetworking.uploadLoadedProjectionToServer()) {
+            this.statusLine = tr(
+                    "gui.schematica_printer.status.upload_failed",
+                    "Failed to upload projection to server.");
+            return;
+        }
+        long now = System.currentTimeMillis();
         runCommand("schematica printer print " + this.blockX + " " + this.blockY + " " + this.blockZ + " replace");
-        this.statusLine = tr("gui.schematica_printer.status.print_requested", "Print requested (using printer storage).");
+        beginAwaitingPrintCompletion(now);
+        this.lastSupplyRefreshAtMs = 0L;
+        refreshSupplyEntries(true);
+        this.statusLine = tr(
+                "gui.schematica_printer.status.print_requested_wait",
+                "Print requested (using printer storage). Waiting for completion...");
         if (this.mc != null && this.mc.thePlayer != null) {
             this.mc.thePlayer.addChatMessage(tr("gui.schematica_printer.chat.print_executed", "Schematica printer: print requested."));
         }
     }
 
+    private void beginAwaitingPrintCompletion(long now) {
+        this.awaitingPrintCompletion = true;
+        this.awaitingPrintStartedAtMs = now;
+        this.awaitingPrintConfirmedFile = this.confirmedFileName;
+    }
+
+    private void cancelAwaitingPrintCompletion() {
+        this.awaitingPrintCompletion = false;
+        this.awaitingPrintStartedAtMs = 0L;
+        this.awaitingPrintConfirmedFile = null;
+    }
+
+    private void handlePendingPrintCompletion(long now) {
+        if (!this.awaitingPrintCompletion) {
+            return;
+        }
+        if (!hasConfirmedSelection()) {
+            cancelAwaitingPrintCompletion();
+            return;
+        }
+        if (this.awaitingPrintConfirmedFile != null && !this.awaitingPrintConfirmedFile.equals(this.confirmedFileName)) {
+            cancelAwaitingPrintCompletion();
+            return;
+        }
+        if (SchematicaRuntime.hasLoadedSchematic()) {
+            String loadedName = SchematicaRuntime.loadedSchematicName;
+            if (loadedName != null
+                    && this.awaitingPrintConfirmedFile != null
+                    && !loadedName.equalsIgnoreCase(this.awaitingPrintConfirmedFile)) {
+                cancelAwaitingPrintCompletion();
+                return;
+            }
+            if (this.awaitingPrintStartedAtMs > 0L && now - this.awaitingPrintStartedAtMs > PRINT_COMPLETE_TIMEOUT_MS) {
+                cancelAwaitingPrintCompletion();
+                this.statusLine = tr(
+                        "gui.schematica_printer.status.print_pending_timeout",
+                        "Print still in progress or failed; selection kept.");
+            }
+            return;
+        }
+        finishPendingPrintAsSuccess();
+    }
+
+    private void finishPendingPrintAsSuccess() {
+        cancelAwaitingPrintCompletion();
+        clearConfirmedSelection(true);
+        this.lastSupplyRefreshAtMs = 0L;
+        refreshSupplyEntries(true);
+        this.statusLine = tr(
+                "gui.schematica_printer.status.print_requested_unselected",
+                "Print requested. Projection reset to unconfirmed.");
+    }
+
     private void runUndo() {
-        runCommand("schematica undo");
+        if (getPrinterInventory() == null) {
+            this.statusLine = tr("gui.schematica_printer.supply.no_printer", "Printer block is missing or invalid.");
+            return;
+        }
+        runCommand("schematica printer undo " + this.blockX + " " + this.blockY + " " + this.blockZ);
+        this.lastSupplyRefreshAtMs = 0L;
+        refreshSupplyEntries(true);
         this.statusLine = tr("gui.schematica_printer.status.undo", "Undo requested.");
     }
 
@@ -550,18 +739,21 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         if (this.mc == null || this.mc.thePlayer == null) {
             return false;
         }
-        if (this.schematicFiles.isEmpty() || this.selectedFileIndex < 0 || this.selectedFileIndex >= this.schematicFiles.size()) {
-            this.statusLine = tr("gui.schematica_printer.status.no_selection", "No schematic selected.");
+        String selected = this.confirmedFileName;
+        if (selected == null || selected.isEmpty()) {
+            this.statusLine = tr("gui.schematica_printer.status.no_confirmed", "No confirmed schematic. Press Enter/L to confirm+load.");
             return false;
         }
-
-        String selected = this.schematicFiles.get(this.selectedFileIndex);
         File file = new File(getSchematicDir(), selected);
         ISchematic schematic = SchematicFormat.readFromFile(file);
         if (schematic == null) {
             this.statusLine = tr("gui.schematica_printer.status.failed_load", "Failed to load selected schematic.");
             return false;
         }
+        this.previewWidth = schematic.getWidth();
+        this.previewHeight = schematic.getHeight();
+        this.previewLength = schematic.getLength();
+        rebuildRequiredMaterials(schematic);
 
         int transformedWidth = getTransformedWidth(schematic.getWidth(), schematic.getLength());
         int transformedLength = getTransformedLength(schematic.getWidth(), schematic.getLength());
@@ -581,6 +773,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         if (fromConfirmKey) {
             this.mc.thePlayer.addChatMessage(tr("gui.schematica_printer.chat.outline_ready", "Outline ready. Press P to print, or Esc to inspect projection."));
         }
+        cacheCurrentState(true);
         refreshSupplyEntries(true);
         return true;
     }
@@ -603,12 +796,146 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             this.rotationDegrees = 0;
         }
         updateTransformButtonLabels();
+        cacheCurrentState(false);
+    }
+
+    private void restoreCachedState() {
+        String key = positionKey();
+        PrinterGuiState state = LAST_STATE_BY_POS.get(key);
+        if (state == null) {
+            PrinterGuiState persisted = new PrinterGuiState();
+            persisted.selectedFile = SchematicaPrinterConfig.getPrinterGuiSelectedFile(key);
+            persisted.rotationDegrees = SchematicaPrinterConfig.getPrinterGuiRotation(key);
+            persisted.mirrorX = SchematicaPrinterConfig.isPrinterGuiMirrorX(key);
+            persisted.mirrorZ = SchematicaPrinterConfig.isPrinterGuiMirrorZ(key);
+            persisted.lastAppliedSignature = SchematicaPrinterConfig.getPrinterGuiLastAppliedSignature(key);
+            if (persisted.selectedFile != null
+                    || persisted.rotationDegrees != 0
+                    || persisted.mirrorX
+                    || persisted.mirrorZ
+                    || persisted.lastAppliedSignature != null) {
+                state = persisted;
+                LAST_STATE_BY_POS.put(key, state);
+            }
+        }
+        if (state == null) {
+            this.confirmedFileName = null;
+            this.rotationDegrees = 0;
+            this.mirrorX = false;
+            this.mirrorZ = false;
+            return;
+        }
+        this.confirmedFileName = state.selectedFile;
+        this.rotationDegrees = normalizeRotation(state.rotationDegrees);
+        this.mirrorX = state.mirrorX;
+        this.mirrorZ = state.mirrorZ;
+    }
+
+    private PrinterGuiState getOrCreateCachedState() {
+        String key = positionKey();
+        PrinterGuiState state = LAST_STATE_BY_POS.get(key);
+        if (state == null) {
+            state = new PrinterGuiState();
+            LAST_STATE_BY_POS.put(key, state);
+        }
+        return state;
+    }
+
+    private boolean hasValidSelection() {
+        return !this.schematicFiles.isEmpty()
+                && this.selectedFileIndex >= 0
+                && this.selectedFileIndex < this.schematicFiles.size();
+    }
+
+    private boolean hasConfirmedSelection() {
+        return this.confirmedFileName != null && !this.confirmedFileName.isEmpty();
+    }
+
+    private void cacheCurrentState(boolean projectionLoaded) {
+        PrinterGuiState state = getOrCreateCachedState();
+        state.rotationDegrees = normalizeRotation(this.rotationDegrees);
+        state.mirrorX = this.mirrorX;
+        state.mirrorZ = this.mirrorZ;
+        state.selectedFile = hasConfirmedSelection() ? this.confirmedFileName : null;
+        if (projectionLoaded) {
+            state.lastAppliedSignature = buildProjectionSignature();
+        } else if (!hasConfirmedSelection()) {
+            state.lastAppliedSignature = null;
+        }
+        SchematicaPrinterConfig.setPrinterGuiState(
+                positionKey(),
+                state.selectedFile,
+                state.rotationDegrees,
+                state.mirrorX,
+                state.mirrorZ,
+                state.lastAppliedSignature);
+    }
+
+    private String buildProjectionSignature() {
+        if (!hasConfirmedSelection()) {
+            return "";
+        }
+        return this.confirmedFileName
+                + "|" + normalizeRotation(this.rotationDegrees)
+                + "|" + this.mirrorX
+                + "|" + this.mirrorZ;
+    }
+
+    private void applyCloseSyncIfNeeded() {
+        if (this.closeSyncApplied) {
+            return;
+        }
+        this.closeSyncApplied = true;
+        maybeAutoLoadProjectionOnClose();
+    }
+
+    private void maybeAutoLoadProjectionOnClose() {
+        cacheCurrentState(false);
+        String currentSignature = buildProjectionSignature();
+        if (currentSignature.isEmpty()) {
+            return;
+        }
+        PrinterGuiState state = getOrCreateCachedState();
+        if (currentSignature.equals(state.lastAppliedSignature)) {
+            return;
+        }
+        loadProjection(false);
+    }
+
+    private int normalizeRotation(int value) {
+        int normalized = value % 360;
+        if (normalized < 0) {
+            normalized += 360;
+        }
+        if (normalized == 90 || normalized == 180 || normalized == 270) {
+            return normalized;
+        }
+        return 0;
     }
 
     private void updateTransformButtonLabels() {
         setButtonLabel(ID_ROTATE, trf("gui.schematica_printer.button.rotate_state", "Rotate:%d", this.rotationDegrees));
         setButtonLabel(ID_MIRROR_X, trf("gui.schematica_printer.button.mirror_x_state", "MirrorX:%s", onOff(this.mirrorX)));
         setButtonLabel(ID_MIRROR_Z, trf("gui.schematica_printer.button.mirror_z_state", "MirrorZ:%s", onOff(this.mirrorZ)));
+    }
+
+    private void updateAlphaButtonLabels() {
+        int ghost = alphaPercent(SchematicaPrinterConfig.getProjectionGhostAlphaSolid());
+        setButtonLabel(ID_ALPHA_DOWN, trf("gui.schematica_printer.button.alpha_down", "Op-%d", ghost));
+        setButtonLabel(ID_ALPHA_UP, trf("gui.schematica_printer.button.alpha_up", "Op+%d", ghost));
+    }
+
+    private void adjustProjectionAlpha(float delta) {
+        float solid = SchematicaPrinterConfig.getProjectionGhostAlphaSolid() + delta;
+        float translucent = SchematicaPrinterConfig.getProjectionGhostAlphaTranslucent() + delta;
+        float line = SchematicaPrinterConfig.getProjectionLineAlpha() + delta;
+        SchematicaPrinterConfig.setProjectionAlphas(solid, translucent, line);
+        updateAlphaButtonLabels();
+        this.statusLine = trf(
+                "gui.schematica_printer.status.opacity",
+                "Projection opacity updated: ghost=%d%% line=%d%%",
+                alphaPercent(SchematicaPrinterConfig.getProjectionGhostAlphaSolid()),
+                alphaPercent(SchematicaPrinterConfig.getProjectionLineAlpha()));
     }
 
     private void setButtonLabel(int id, String label) {
@@ -630,19 +957,45 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             return;
         }
         SupplyEntry entry = this.supplyEntries.get(index);
-        if (entry.playerAvailable <= 0) {
-            this.statusLine = tr("gui.schematica_printer.supply.no_player_item", "You do not have this item in inventory.");
+
+        IInventory printerInventory = getPrinterInventory();
+        if (printerInventory == null) {
+            this.statusLine = tr("gui.schematica_printer.supply.no_printer", "Printer block is missing or invalid.");
+            refreshSupplyEntries(true);
             return;
         }
-        int request = entry.missing <= 0 ? entry.playerAvailable : Math.min(entry.missing, entry.playerAvailable);
+
+        int missingNow = Math.max(0, entry.missing);
+        if (missingNow <= 0) {
+            this.statusLine = tr("gui.schematica_printer.supply.already_enough", "Printer already has enough of this material.");
+            refreshSupplyEntries(true);
+            return;
+        }
+
+        Map<MaterialKey, Integer> playerNow = collectMaterialCounts(this.mc != null && this.mc.thePlayer != null ? this.mc.thePlayer.inventory : null);
+        int availableNow = playerNow.containsKey(entry.key) ? playerNow.get(entry.key) : 0;
+        if (availableNow <= 0) {
+            this.statusLine = tr("gui.schematica_printer.supply.no_player_item", "You do not have this item in inventory.");
+            refreshSupplyEntries(true);
+            return;
+        }
+        int request = missingNow <= 0 ? availableNow : Math.min(missingNow, availableNow);
         if (request <= 0) {
             this.statusLine = tr("gui.schematica_printer.supply.no_player_item", "You do not have this item in inventory.");
+            refreshSupplyEntries(true);
             return;
         }
+        long now = System.currentTimeMillis();
+        if (now - this.lastSupplyRequestAtMs < 150L) {
+            this.statusLine = tr("gui.schematica_printer.supply.too_fast", "Too fast; wait a moment before the next supply request.");
+            return;
+        }
+        this.lastSupplyRequestAtMs = now;
 
         runCommand("schematica printer provide "
                 + this.blockX + " " + this.blockY + " " + this.blockZ + " "
                 + entry.key.itemId + " " + entry.key.subtype + " " + request);
+        this.lastSupplyRefreshAtMs = 0L;
         this.statusLine = trf("gui.schematica_printer.supply.provide_sent", "Supply requested: %s x%d", entry.displayName, request);
         refreshSupplyEntries(true);
     }
@@ -663,7 +1016,19 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             return;
         }
 
-        Map<MaterialKey, Integer> stored = collectMaterialCounts(getPrinterInventory());
+        IInventory printerInventory = getPrinterInventory();
+        if (printerInventory == null) {
+            this.statusLine = tr("gui.schematica_printer.supply.no_printer", "Printer block is missing or invalid.");
+            updateSupplyButtons();
+            return;
+        }
+
+        Map<MaterialKey, Integer> stored = collectStoredCountsFromServerSnapshot(now);
+        if (stored == null) {
+            // Dedicated server does not share runtime snapshot memory with client.
+            // Fall back to the client-side tile inventory view to avoid sync-command spam.
+            stored = collectMaterialCounts(printerInventory);
+        }
         Map<MaterialKey, Integer> player = collectMaterialCounts(this.mc != null && this.mc.thePlayer != null ? this.mc.thePlayer.inventory : null);
 
         for (RequiredMaterial required : this.requiredMaterials) {
@@ -697,10 +1062,10 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         if (this.mc == null || this.mc.theWorld == null || !SchematicaRuntime.hasLoadedSchematic()) {
             return;
         }
-        if (this.selectedFileIndex < 0 || this.selectedFileIndex >= this.schematicFiles.size()) {
+        if (!hasConfirmedSelection()) {
             return;
         }
-        String selected = this.schematicFiles.get(this.selectedFileIndex);
+        String selected = this.confirmedFileName;
         String loadedName = SchematicaRuntime.loadedSchematicName;
         if (selected == null || loadedName == null || !loadedName.equalsIgnoreCase(selected)) {
             return;
@@ -716,6 +1081,9 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
 
     private IInventory getPrinterInventory() {
         if (this.mc == null || this.mc.theWorld == null) {
+            return null;
+        }
+        if (this.mc.theWorld.getBlockId(this.blockX, this.blockY, this.blockZ) != SchematicaBlocks.SCHEMATICA_PRINTER.blockID) {
             return null;
         }
         TileEntity tileEntity = this.mc.theWorld.getBlockTileEntity(this.blockX, this.blockY, this.blockZ);
@@ -737,6 +1105,54 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             counts.put(key, old == null ? stack.stackSize : old + stack.stackSize);
         }
         return counts;
+    }
+
+    private Map<MaterialKey, Integer> collectStoredCountsFromServerSnapshot(long now) {
+        long updatedAt = SchematicaRuntime.getPrinterInventorySnapshotUpdatedAt(this.blockX, this.blockY, this.blockZ);
+        if (updatedAt <= 0L || now - updatedAt > SERVER_SNAPSHOT_MAX_AGE_MS) {
+            return null;
+        }
+        Map<String, Integer> raw = SchematicaRuntime.getPrinterInventorySnapshotCounts(this.blockX, this.blockY, this.blockZ);
+        if (raw == null) {
+            return new HashMap<MaterialKey, Integer>();
+        }
+        Map<MaterialKey, Integer> counts = new HashMap<MaterialKey, Integer>();
+        for (Map.Entry<String, Integer> entry : raw.entrySet()) {
+            if (entry == null || entry.getKey() == null || entry.getValue() == null) {
+                continue;
+            }
+            MaterialKey key = parseMaterialKey(entry.getKey());
+            if (key == null) {
+                continue;
+            }
+            int amount = entry.getValue().intValue();
+            if (amount <= 0) {
+                continue;
+            }
+            Integer old = counts.get(key);
+            counts.put(key, old == null ? amount : old + amount);
+        }
+        return counts;
+    }
+
+    private MaterialKey parseMaterialKey(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return null;
+        }
+        int split = raw.indexOf(':');
+        if (split <= 0 || split >= raw.length() - 1) {
+            return null;
+        }
+        try {
+            int itemId = Integer.parseInt(raw.substring(0, split));
+            int subtype = Integer.parseInt(raw.substring(split + 1));
+            if (itemId <= 0) {
+                return null;
+            }
+            return new MaterialKey(itemId, subtype);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private boolean isDoorUpperHalf(Block block, int metadata) {
@@ -889,6 +1305,10 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         return value ? tr("gui.schematica_printer.value.on", "On") : tr("gui.schematica_printer.value.off", "Off");
     }
 
+    private int alphaPercent(float alpha) {
+        return Math.round(alpha * 100.0F);
+    }
+
     private String trimToWidth(String text, int maxWidth) {
         if (text == null || text.isEmpty() || this.fontRenderer == null || maxWidth <= 0) {
             return "";
@@ -919,6 +1339,10 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         this.mc.thePlayer.sendChatMessage(trimmed);
     }
 
+    private void requestPrinterInventorySnapshot() {
+        runCommand("schematica printer sync " + this.blockX + " " + this.blockY + " " + this.blockZ);
+    }
+
     private File getSchematicDir() {
         File dir = new File(Minecraft.getMinecraft().mcDataDir, "schematics");
         if (!dir.exists()) {
@@ -932,6 +1356,7 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
     }
 
     private void closeGui() {
+        applyCloseSyncIfNeeded();
         if (this.mc != null) {
             this.mc.displayGuiScreen(null);
             this.mc.setIngameFocus();
@@ -997,5 +1422,13 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             this.displayName = displayName;
             this.required = required;
         }
+    }
+
+    private static final class PrinterGuiState {
+        private String selectedFile;
+        private int rotationDegrees;
+        private boolean mirrorX;
+        private boolean mirrorZ;
+        private String lastAppliedSignature;
     }
 }

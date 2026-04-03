@@ -1,6 +1,6 @@
 {
 	"schemaVersion": 1,
-	"id": "Schematica_survival",
+	"id": "schematica_survival",
 	"version": "${version}",
 	"depends": {
 		"fishmodloader": ">=3.4.2"

@@ -7,7 +7,7 @@ It provides schematic loading, moving, rotation, mirroring, paste/undo, selectio
 Current project info:
 - Mod name: `Schematica_survival`
 - Mod id: `schematica_survival`
-- Version: `0.1.0`
+- Version: `0.1.2`
 - Entrypoint: `com.github.lunatrius.schematica.SchematicaSurvival`
 
 ## Main Features
@@ -15,15 +15,25 @@ Current project info:
 - Printer block with recipe
 - Printer GUI:
   - Rescan schematic files
-  - Load projection (outline)
+  - Confirm & Load projection (manual load gate)
   - Print / Undo
   - Rotate and mirror
+  - Projection opacity controls (ghost + line)
   - Material supply panel (one button per material)
   - Draggable scroll bar (mouse wheel and Up/Down supported)
+- Projection rendering behavior:
+  - Ghost pass keeps self-occlusion (covered faces do not bleed through)
+  - Wireframe pass draws exposed faces only
 - Printer-stored materials:
   - Printing consumes the printer inventory
   - No direct player-inventory consumption in printer print flow
+  - Stored counts are synced from server-side printer inventory snapshots
   - Incremental supply via `printer provide`
+- Emerald print cost (configurable):
+  - By default, every `32` required blocks costs `1` emerald (rounded up)
+  - Configurable in `config/schematica_survival.properties`:
+    - `printer.requireEmerald`
+    - `printer.blocksPerEmerald`
 - Safe print behavior:
   - If a target position is non-air and differs from the projected block, printing is blocked and the coordinate is returned
   - If the world block already matches the projected block, that position is skipped (no placement, no material cost)
@@ -33,7 +43,7 @@ Current project info:
 2. Put `.schematic` files into `run/schematics/`
 3. Craft and place the printer block
 4. Open printer GUI:
-   - Select a schematic and load the outline first
+   - Select a schematic, then click Confirm & Load
    - Provide required materials from the lower panel
    - Start printing
 

@@ -2,6 +2,7 @@
 package com.github.lunatrius.schematica.client.gui;
 
 import com.github.lunatrius.schematica.FileFilterSchematic;
+import com.github.lunatrius.schematica.SchematicaPrinterConfig;
 import com.github.lunatrius.schematica.SchematicaRuntime;
 import com.github.lunatrius.schematica.api.ISchematic;
 import com.github.lunatrius.schematica.util.I18n;
@@ -40,6 +41,8 @@ public class GuiSchematicaControl extends GuiScreen {
     private static final int ID_FILE_LOAD = 22;
     private static final int ID_MOVE_APPLY = 23;
     private static final int ID_CREATE_APPLY = 24;
+    private static final int ID_ALPHA_DOWN = 25;
+    private static final int ID_ALPHA_UP = 26;
 
     private final List<String> schematicFiles = new ArrayList<String>();
     private int selectedFileIndex = -1;
@@ -113,6 +116,10 @@ public class GuiSchematicaControl extends GuiScreen {
         this.buttonList.add(new GuiButton(ID_UNLOAD, x0, y, bw * 2 + gap, bh, tr("gui.schematica_control.button.unload", "K Unload")));
         this.buttonList.add(new GuiButton(ID_CLOSE, x2, y, bw * 2 + gap, bh, tr("gui.schematica_control.button.close", "Esc Close")));
 
+        y += bh + gap;
+        this.buttonList.add(new GuiButton(ID_ALPHA_DOWN, x0, y, bw * 2 + gap, bh, tr("gui.schematica_control.button.alpha_down", "- Opacity")));
+        this.buttonList.add(new GuiButton(ID_ALPHA_UP, x2, y, bw * 2 + gap, bh, tr("gui.schematica_control.button.alpha_up", "+ Opacity")));
+
         y += bh + gap + sectionGap;
         this.fieldsTop = y;
         this.originXField = new GuiTextField(this.fontRenderer, panelLeft, y, 64, bh);
@@ -126,6 +133,7 @@ public class GuiSchematicaControl extends GuiScreen {
         setOriginFieldsFromRuntime();
         refreshSchematicFiles();
         updateButtonStates();
+        updateAlphaButtonLabels();
     }
 
     @Override
@@ -160,10 +168,18 @@ public class GuiSchematicaControl extends GuiScreen {
                 setOriginFieldsFromRuntime();
                 break;
             case ID_PASTE_REPLACE:
-                sendLocalMessage(tr("gui.schematica_control.msg.paste_disabled", "Survival direct paste is disabled. Use the printer block GUI."));
+                if (isCreativePlayer()) {
+                    runCommand("schematica paste replace");
+                } else {
+                    sendLocalMessage(tr("gui.schematica_control.msg.paste_disabled", "Survival direct paste is disabled. Use the printer block GUI."));
+                }
                 break;
             case ID_PASTE_SOLID:
-                sendLocalMessage(tr("gui.schematica_control.msg.paste_disabled", "Survival direct paste is disabled. Use the printer block GUI."));
+                if (isCreativePlayer()) {
+                    runCommand("schematica paste solid");
+                } else {
+                    sendLocalMessage(tr("gui.schematica_control.msg.paste_disabled", "Survival direct paste is disabled. Use the printer block GUI."));
+                }
                 break;
             case ID_UNDO:
                 runCommand("schematica undo");
@@ -216,6 +232,12 @@ public class GuiSchematicaControl extends GuiScreen {
                 break;
             case ID_UNLOAD:
                 runCommand("schematica unload");
+                break;
+            case ID_ALPHA_DOWN:
+                adjustProjectionAlpha(-0.05F);
+                break;
+            case ID_ALPHA_UP:
+                adjustProjectionAlpha(0.05F);
                 break;
             default:
                 break;
@@ -286,6 +308,7 @@ public class GuiSchematicaControl extends GuiScreen {
         this.originXField.updateCursorCounter();
         this.originYField.updateCursorCounter();
         this.originZField.updateCursorCounter();
+        updateAlphaButtonLabels();
     }
 
     @Override
@@ -328,6 +351,16 @@ public class GuiSchematicaControl extends GuiScreen {
 
         int hintY = titleY + 44;
         this.drawCenteredString(this.fontRenderer, tr("gui.schematica_control.hotkeys", "Hotkeys: [ ] / L / C / P / O / U / H / 1 2 3 / WASDQE"), this.width / 2, hintY, 0xAAAAAA);
+        this.drawCenteredString(
+                this.fontRenderer,
+                trf(
+                        "gui.schematica_control.opacity_line",
+                        "Projection opacity: ghost=%d%%  line=%d%%  (- / =)",
+                        alphaPercent(SchematicaPrinterConfig.getProjectionGhostAlphaSolid()),
+                        alphaPercent(SchematicaPrinterConfig.getProjectionLineAlpha())),
+                this.width / 2,
+                hintY + 10,
+                0x8EC8FF);
 
         int createLabelY = this.createTop - 10;
         this.drawString(this.fontRenderer, tr("gui.schematica_control.label.create_name", "Create Name"), this.panelLeft + 6, createLabelY, 0xAAAAAA);
@@ -463,8 +496,9 @@ public class GuiSchematicaControl extends GuiScreen {
         setButtonEnabled(ID_FILE_NEXT, hasFiles);
         setButtonEnabled(ID_FILE_LOAD, hasFiles);
         setButtonEnabled(ID_CREATE_APPLY, SchematicaRuntime.hasSelection());
-        setButtonEnabled(ID_PASTE_REPLACE, false);
-        setButtonEnabled(ID_PASTE_SOLID, false);
+        boolean allowDirectPaste = SchematicaRuntime.hasLoadedSchematic() && isCreativePlayer();
+        setButtonEnabled(ID_PASTE_REPLACE, allowDirectPaste);
+        setButtonEnabled(ID_PASTE_SOLID, allowDirectPaste);
         setButtonEnabled(ID_UNDO, SchematicaRuntime.hasUndoSnapshot());
     }
 
@@ -483,10 +517,18 @@ public class GuiSchematicaControl extends GuiScreen {
             case Keyboard.KEY_T:
                 return triggerButton(ID_STATUS);
             case Keyboard.KEY_P:
-                sendLocalMessage(tr("gui.schematica_control.msg.paste_disabled", "Survival direct paste is disabled. Use the printer block GUI."));
+                if (isCreativePlayer()) {
+                    triggerButton(ID_PASTE_REPLACE);
+                } else {
+                    sendLocalMessage(tr("gui.schematica_control.msg.paste_disabled", "Survival direct paste is disabled. Use the printer block GUI."));
+                }
                 return true;
             case Keyboard.KEY_O:
-                sendLocalMessage(tr("gui.schematica_control.msg.paste_disabled", "Survival direct paste is disabled. Use the printer block GUI."));
+                if (isCreativePlayer()) {
+                    triggerButton(ID_PASTE_SOLID);
+                } else {
+                    sendLocalMessage(tr("gui.schematica_control.msg.paste_disabled", "Survival direct paste is disabled. Use the printer block GUI."));
+                }
                 return true;
             case Keyboard.KEY_U:
                 return triggerButton(ID_UNDO);
@@ -516,6 +558,14 @@ public class GuiSchematicaControl extends GuiScreen {
                 return triggerButton(ID_NUDGE_Y_NEG);
             case Keyboard.KEY_K:
                 return triggerButton(ID_UNLOAD);
+            case Keyboard.KEY_MINUS:
+            case Keyboard.KEY_SUBTRACT:
+            case Keyboard.KEY_N:
+                return triggerButton(ID_ALPHA_DOWN);
+            case Keyboard.KEY_EQUALS:
+            case Keyboard.KEY_ADD:
+            case Keyboard.KEY_B:
+                return triggerButton(ID_ALPHA_UP);
             default:
                 return false;
         }
@@ -552,6 +602,27 @@ public class GuiSchematicaControl extends GuiScreen {
         return this.fontRenderer.trimStringToWidth(text, allowed) + suffix;
     }
 
+    private boolean isCreativePlayer() {
+        return this.mc != null && this.mc.thePlayer != null && this.mc.thePlayer.inCreativeMode();
+    }
+
+    private void adjustProjectionAlpha(float delta) {
+        float solid = SchematicaPrinterConfig.getProjectionGhostAlphaSolid() + delta;
+        float translucent = SchematicaPrinterConfig.getProjectionGhostAlphaTranslucent() + delta;
+        float line = SchematicaPrinterConfig.getProjectionLineAlpha() + delta;
+        SchematicaPrinterConfig.setProjectionAlphas(solid, translucent, line);
+        updateAlphaButtonLabels();
+    }
+
+    private void updateAlphaButtonLabels() {
+        setButtonLabel(ID_ALPHA_DOWN, trf("gui.schematica_control.button.alpha_down", "- Opacity (%d%%)", alphaPercent(SchematicaPrinterConfig.getProjectionGhostAlphaSolid())));
+        setButtonLabel(ID_ALPHA_UP, trf("gui.schematica_control.button.alpha_up", "+ Opacity (%d%%)", alphaPercent(SchematicaPrinterConfig.getProjectionGhostAlphaSolid())));
+    }
+
+    private int alphaPercent(float alpha) {
+        return Math.round(alpha * 100.0F);
+    }
+
     private void setButtonEnabled(int id, boolean enabled) {
         for (Object object : this.buttonList) {
             if (!(object instanceof GuiButton)) {
@@ -560,6 +631,19 @@ public class GuiSchematicaControl extends GuiScreen {
             GuiButton button = (GuiButton) object;
             if (button.id == id) {
                 button.enabled = enabled;
+                return;
+            }
+        }
+    }
+
+    private void setButtonLabel(int id, String label) {
+        for (Object object : this.buttonList) {
+            if (!(object instanceof GuiButton)) {
+                continue;
+            }
+            GuiButton button = (GuiButton) object;
+            if (button.id == id) {
+                button.displayString = label;
                 return;
             }
         }

@@ -12,7 +12,6 @@ import net.minecraft.IInventory;
 import net.minecraft.ItemStack;
 import net.minecraft.Material;
 import net.minecraft.Minecraft;
-import net.minecraft.NBTTagCompound;
 import net.minecraft.TileEntity;
 import net.minecraft.TileEntityChest;
 import net.minecraft.World;
@@ -52,47 +51,53 @@ public class BlockSchematicPrinter extends BlockContainer {
 
     @Override
     public void breakBlock(World world, int x, int y, int z, int blockId, int metadata) {
-        TileEntity tileEntity = world.getBlockTileEntity(x, y, z);
-        if (tileEntity instanceof IInventory) {
-            IInventory inventory = (IInventory) tileEntity;
-            for (int slot = 0; slot < inventory.getSizeInventory(); ++slot) {
-                ItemStack stack = inventory.getStackInSlot(slot);
-                if (stack == null) {
-                    continue;
+        if (world != null && !world.isRemote) {
+            TileEntity tileEntity = world.getBlockTileEntity(x, y, z);
+            if (tileEntity instanceof IInventory) {
+                IInventory inventory = (IInventory) tileEntity;
+                for (int slot = 0; slot < inventory.getSizeInventory(); ++slot) {
+                    ItemStack slotStack = inventory.getStackInSlot(slot);
+                    if (slotStack == null || slotStack.stackSize <= 0) {
+                        continue;
+                    }
+                    ItemStack stackToDrop = slotStack.copy();
+                    inventory.setInventorySlotContents(slot, null);
+                    spawnInventoryDrop(world, x, y, z, stackToDrop);
                 }
-                float dx = RANDOM.nextFloat() * 0.8F + 0.1F;
-                float dy = RANDOM.nextFloat() * 0.8F + 0.1F;
-                float dz = RANDOM.nextFloat() * 0.8F + 0.1F;
-                while (stack.stackSize > 0) {
-                    int count = RANDOM.nextInt(21) + 10;
-                    if (count > stack.stackSize) {
-                        count = stack.stackSize;
-                    }
-                    stack.stackSize -= count;
-                    EntityItem drop = new EntityItem(
-                            world,
-                            (float) x + dx,
-                            (float) y + dy,
-                            (float) z + dz,
-                            new ItemStack(stack.itemID, count, stack.getItemSubtype()));
-                    if (stack.isItemDamaged()) {
-                        drop.getEntityItem().setItemDamage(stack.getItemDamage());
-                    }
-                    float velocity = 0.05F;
-                    drop.motionX = (float) RANDOM.nextGaussian() * velocity;
-                    drop.motionY = (float) RANDOM.nextGaussian() * velocity + 0.2F;
-                    drop.motionZ = (float) RANDOM.nextGaussian() * velocity;
-                    if (stack.getItem().hasQuality()) {
-                        drop.getEntityItem().setQuality(stack.getQuality());
-                    }
-                    if (stack.hasTagCompound()) {
-                        drop.getEntityItem().setTagCompound((NBTTagCompound) stack.getTagCompound().copy());
-                    }
-                    world.spawnEntityInWorld(drop);
-                }
+                inventory.onInventoryChanged();
+                world.func_96440_m(x, y, z, blockId);
             }
-            world.func_96440_m(x, y, z, blockId);
         }
         super.breakBlock(world, x, y, z, blockId, metadata);
+    }
+
+    private void spawnInventoryDrop(World world, int x, int y, int z, ItemStack stack) {
+        if (world == null || stack == null || stack.stackSize <= 0) {
+            return;
+        }
+
+        ItemStack source = stack.copy();
+        float dx = RANDOM.nextFloat() * 0.8F + 0.1F;
+        float dy = RANDOM.nextFloat() * 0.8F + 0.1F;
+        float dz = RANDOM.nextFloat() * 0.8F + 0.1F;
+        int remaining = source.stackSize;
+
+        while (remaining > 0) {
+            int count = RANDOM.nextInt(21) + 10;
+            if (count > remaining) {
+                count = remaining;
+            }
+            remaining -= count;
+
+            ItemStack dropStack = source.copy();
+            dropStack.stackSize = count;
+
+            EntityItem drop = new EntityItem(world, (float) x + dx, (float) y + dy, (float) z + dz, dropStack);
+            float velocity = 0.05F;
+            drop.motionX = (float) RANDOM.nextGaussian() * velocity;
+            drop.motionY = (float) RANDOM.nextGaussian() * velocity + 0.2F;
+            drop.motionZ = (float) RANDOM.nextGaussian() * velocity;
+            world.spawnEntityInWorld(drop);
+        }
     }
 }

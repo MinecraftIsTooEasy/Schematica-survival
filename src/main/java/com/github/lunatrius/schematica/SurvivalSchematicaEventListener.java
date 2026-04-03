@@ -4,11 +4,15 @@ import com.github.lunatrius.schematica.FileFilterSchematic;
 import com.github.lunatrius.schematica.SchematicaRuntime;
 import com.github.lunatrius.schematica.api.ISchematic;
 import com.github.lunatrius.schematica.block.SchematicaBlocks;
+import com.github.lunatrius.schematica.network.S2CPrinterInventorySnapshotPacket;
+import com.github.lunatrius.schematica.network.S2CPrinterPrintResultPacket;
 import com.github.lunatrius.schematica.util.I18n;
 import com.github.lunatrius.schematica.world.schematic.SchematicFormat;
 import com.github.lunatrius.schematica.world.storage.Schematic;
 import com.google.common.eventbus.Subscribe;
+import moddedmite.rustedironcore.network.Network;
 import net.minecraft.Block;
+import net.minecraft.EntityItem;
 import net.minecraft.EntityPlayer;
 import net.minecraft.IInventory;
 import net.minecraft.InventoryPlayer;
@@ -17,6 +21,7 @@ import net.minecraft.ItemStack;
 import net.minecraft.Minecraft;
 import net.minecraft.TileEntity;
 import net.minecraft.World;
+import net.minecraft.ServerPlayer;
 import net.xiaoyu233.fml.reload.event.HandleChatCommandEvent;
 
 import java.io.File;
@@ -36,6 +41,8 @@ public class SurvivalSchematicaEventListener {
     private static final long MAX_PASTE_VOLUME = 8_000_000L;
     private static final int MIN_WORLD_Y = 0;
     private static final int MAX_WORLD_Y = 255;
+    private static final long PROJECTION_ALERT_MARKER_TTL_MS = 12_000L;
+    private static long PRINTER_TXN_SEQ = 0L;
 
     @Subscribe
     public void onCommand(HandleChatCommandEvent event) {
@@ -372,9 +379,121 @@ public class SurvivalSchematicaEventListener {
     }
 
     private void handlePaste(HandleChatCommandEvent event, String[] parts) {
-        event.getPlayer().addChatMessage(I18n.tr(
-                "schematica.command.paste.disabled",
-                "Direct paste is disabled in survival. Use the printer GUI to print."));
+        EntityPlayer player = event.getPlayer();
+        if (player == null) {
+            return;
+        }
+        if (!player.inCreativeMode()) {
+            player.addChatMessage(I18n.tr(
+                    "schematica.command.paste.disabled",
+                    "Direct paste is disabled in survival. Use the printer GUI to print."));
+            return;
+        }
+        if (!SchematicaRuntime.hasLoadedSchematic()) {
+            player.addChatMessage(I18n.tr("schematica.command.no_loaded", "No schematic loaded."));
+            return;
+        }
+        World world = event.getWorld();
+        if (world == null) {
+            player.addChatMessage(I18n.tr("schematica.command.no_world", "No world available."));
+            return;
+        }
+
+        PasteMode mode = parsePasteMode(parts);
+        if (mode == null) {
+            player.addChatMessage(I18n.tr(
+                    "schematica.command.paste.usage",
+                    "Usage: /schematica paste [replace|solid|nonair]"));
+            return;
+        }
+
+        ISchematic schematic = SchematicaRuntime.loadedSchematic;
+        long volume = (long) schematic.getWidth() * schematic.getHeight() * schematic.getLength();
+        if (volume <= 0L || volume > MAX_PASTE_VOLUME) {
+            player.addChatMessage(I18n.trf(
+                    "schematica.command.paste.too_large",
+                    "Schematic too large to paste. Max blocks: %d",
+                    MAX_PASTE_VOLUME));
+            return;
+        }
+
+        String boundsError = validateRegionBounds(
+                SchematicaRuntime.originX,
+                SchematicaRuntime.originY,
+                SchematicaRuntime.originZ,
+                schematic.getWidth(),
+                schematic.getHeight(),
+                schematic.getLength());
+        if (boundsError != null) {
+            player.addChatMessage(I18n.trf("schematica.command.paste.bounds", "Cannot paste: %s", boundsError));
+            return;
+        }
+
+        MaterialCheckResult materialCheck = checkAndConsumePasteMaterials(
+                player,
+                world,
+                schematic,
+                SchematicaRuntime.originX,
+                SchematicaRuntime.originY,
+                SchematicaRuntime.originZ,
+                mode);
+        if (!materialCheck.canPaste) {
+            player.addChatMessage(I18n.trf(
+                    "schematica.command.paste.material_shortage",
+                    "Not enough materials to paste. Missing %d types:",
+                    materialCheck.shortages.size()));
+            List<String> lines = buildCompactShortageLines(materialCheck.shortages, 3);
+            int maxLines = 12;
+            for (int i = 0; i < lines.size() && i < maxLines; ++i) {
+                player.addChatMessage(lines.get(i));
+            }
+            if (lines.size() > maxLines) {
+                player.addChatMessage(I18n.trf(
+                        "schematica.command.paste.material_more",
+                        "... omitted %d more lines.",
+                        lines.size() - maxLines));
+            }
+            return;
+        }
+
+        Schematic undo = captureWorldRegion(
+                world,
+                SchematicaRuntime.originX,
+                SchematicaRuntime.originY,
+                SchematicaRuntime.originZ,
+                schematic.getWidth(),
+                schematic.getHeight(),
+                schematic.getLength(),
+                copyIcon(schematic));
+        if (undo == null) {
+            player.addChatMessage(I18n.tr("schematica.command.paste.undo_capture_failed", "Failed to capture undo snapshot."));
+            return;
+        }
+        SchematicaRuntime.setUndoSnapshot(
+                undo,
+                SchematicaRuntime.originX,
+                SchematicaRuntime.originY,
+                SchematicaRuntime.originZ,
+                SchematicaRuntime.loadedSchematicName);
+
+        PasteResult result = pasteSchematic(
+                world,
+                schematic,
+                SchematicaRuntime.originX,
+                SchematicaRuntime.originY,
+                SchematicaRuntime.originZ,
+                mode);
+        String name = SchematicaRuntime.loadedSchematicName == null
+                ? I18n.tr("schematica.command.value.unknown", "<unknown>")
+                : SchematicaRuntime.loadedSchematicName;
+        String failedSuffix = result.failed > 0
+                ? I18n.trf("schematica.command.paste.failed_suffix", ", failed=%d", result.failed)
+                : "";
+        player.addChatMessage(I18n.trf(
+                "schematica.command.paste.done",
+                "Pasted %s mode=%s, materialsUsed=%d, materialTypes=%d: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s",
+                name, mode.id, materialCheck.totalConsumed, materialCheck.materialTypes,
+                result.placed, result.cleared, result.containersEmptied, result.unchanged, failedSuffix));
     }
 
     private void handleUndo(HandleChatCommandEvent event) {
@@ -480,7 +599,7 @@ public class SurvivalSchematicaEventListener {
             event.setExecuteSuccess(true);
             event.getPlayer().addChatMessage(I18n.tr(
                     "schematica.command.printer.usage",
-                    "Usage: /schematica printer <print|provide> ..."));
+                    "Usage: /schematica printer <print|undo|provide|health|sync> ..."));
             return;
         }
 
@@ -495,24 +614,54 @@ public class SurvivalSchematicaEventListener {
             return;
         }
 
+        if ("undo".equals(action)) {
+            if (clientWorld) {
+                event.setExecuteSuccess(false);
+                return;
+            }
+            event.setExecuteSuccess(true);
+            handlePrinterUndo(event, parts);
+            return;
+        }
+
         if ("provide".equals(action)) {
             if (clientWorld) {
-                boolean syntaxValid = handlePrinterProvide(event, parts, false);
-                event.setExecuteSuccess(!syntaxValid);
-            } else {
-                event.setExecuteSuccess(true);
-                handlePrinterProvide(event, parts, true);
+                event.setExecuteSuccess(false);
+                return;
             }
+            event.setExecuteSuccess(true);
+            handlePrinterProvide(event, parts, true);
+            return;
+        }
+
+        if ("health".equals(action)) {
+            if (clientWorld) {
+                event.setExecuteSuccess(false);
+                return;
+            }
+            event.setExecuteSuccess(true);
+            handlePrinterHealth(event, parts);
+            return;
+        }
+
+        if ("sync".equals(action)) {
+            if (clientWorld) {
+                event.setExecuteSuccess(false);
+                return;
+            }
+            event.setExecuteSuccess(true);
+            handlePrinterSync(event, parts, false);
             return;
         }
 
         event.setExecuteSuccess(true);
         event.getPlayer().addChatMessage(I18n.tr(
                 "schematica.command.printer.usage",
-                "Usage: /schematica printer <print|provide> ..."));
+                "Usage: /schematica printer <print|undo|provide|health|sync> ..."));
     }
 
     private void handlePrinterPrint(HandleChatCommandEvent event, String[] parts) {
+        SchematicaRuntime.clearProjectionAlertMarker();
         if (parts.length < 6) {
             event.getPlayer().addChatMessage(I18n.tr(
                     "schematica.command.printer.print.usage",
@@ -528,11 +677,6 @@ public class SurvivalSchematicaEventListener {
             printerZ = Integer.parseInt(parts[5]);
         } catch (NumberFormatException e) {
             event.getPlayer().addChatMessage(I18n.tr("schematica.command.coords_int", "Coordinates must be integers."));
-            return;
-        }
-
-        if (!SchematicaRuntime.hasLoadedSchematic()) {
-            event.getPlayer().addChatMessage(I18n.tr("schematica.command.no_loaded", "No schematic loaded."));
             return;
         }
         if (event.getWorld() == null) {
@@ -556,10 +700,27 @@ public class SurvivalSchematicaEventListener {
                     "Usage: /schematica printer print <x> <y> <z> [replace|solid|nonair]"));
             return;
         }
+        PrintProjectionContext projection = resolvePrinterProjectionContext(event.getPlayer());
+        if (projection == null || projection.schematic == null) {
+            event.getPlayer().addChatMessage(I18n.tr(
+                    "schematica.command.printer.print.no_projection",
+                    "No projection is available for printer print. Load one on server, or enable printer.clientProjectionUpload."));
+            return;
+        }
 
-        ISchematic schematic = SchematicaRuntime.loadedSchematic;
+        ISchematic schematic = projection.schematic;
+        int originX = projection.originX;
+        int originY = projection.originY;
+        int originZ = projection.originZ;
+        String schematicName = projection.schematicName;
+
+        String txnId = newPrinterTxnId("print");
+        logPrinterTxn(event, txnId, "START", String.format(Locale.ROOT,
+                "printer=[%d,%d,%d], mode=%s, source=%s",
+                printerX, printerY, printerZ, mode.id, projection.uploadedFromClient ? "client_upload" : "server_loaded"));
         long volume = (long) schematic.getWidth() * schematic.getHeight() * schematic.getLength();
         if (volume <= 0L || volume > MAX_PASTE_VOLUME) {
+            logPrinterTxn(event, txnId, "FAIL", String.format(Locale.ROOT, "invalid_volume=%d", volume));
             event.getPlayer().addChatMessage(I18n.trf(
                     "schematica.command.paste.too_large",
                     "Schematic too large to paste. Max blocks: %d",
@@ -568,13 +729,14 @@ public class SurvivalSchematicaEventListener {
         }
 
         String boundsError = validateRegionBounds(
-                SchematicaRuntime.originX,
-                SchematicaRuntime.originY,
-                SchematicaRuntime.originZ,
+                originX,
+                originY,
+                originZ,
                 schematic.getWidth(),
                 schematic.getHeight(),
                 schematic.getLength());
         if (boundsError != null) {
+            logPrinterTxn(event, txnId, "FAIL", "bounds=" + boundsError);
             event.getPlayer().addChatMessage(I18n.trf("schematica.command.paste.bounds", "Cannot paste: %s", boundsError));
             return;
         }
@@ -582,16 +744,25 @@ public class SurvivalSchematicaEventListener {
         PasteConflict conflict = findFirstPrinterCollision(
                 event.getWorld(),
                 schematic,
-                SchematicaRuntime.originX,
-                SchematicaRuntime.originY,
-                SchematicaRuntime.originZ);
+                originX,
+                originY,
+                originZ);
         if (conflict != null) {
+            SchematicaRuntime.setProjectionAlertMarker(
+                    conflict.x,
+                    conflict.y,
+                    conflict.z,
+                    PROJECTION_ALERT_MARKER_TTL_MS,
+                    false);
             event.getPlayer().addChatMessage(I18n.trf(
                     "schematica.command.printer.print.blocked",
                     "Print blocked at [%d,%d,%d]: found %s[%d:%d], target is %s[%d:%d].",
                     conflict.x, conflict.y, conflict.z,
                     conflict.existingName, conflict.existingId, conflict.existingMeta,
                     conflict.targetName, conflict.targetId, conflict.targetMeta));
+            logPrinterTxn(event, txnId, "FAIL", String.format(Locale.ROOT,
+                    "collision=[%d,%d,%d]",
+                    conflict.x, conflict.y, conflict.z));
             return;
         }
 
@@ -599,11 +770,14 @@ public class SurvivalSchematicaEventListener {
                 printerInventory,
                 event.getWorld(),
                 schematic,
-                SchematicaRuntime.originX,
-                SchematicaRuntime.originY,
-                SchematicaRuntime.originZ,
+                originX,
+                originY,
+                originZ,
                 mode);
         if (!materialCheck.canPaste) {
+            logPrinterTxn(event, txnId, "FAIL", String.format(Locale.ROOT,
+                    "material_shortage_types=%d",
+                    materialCheck.shortages.size()));
             event.getPlayer().addChatMessage(I18n.trf(
                     "schematica.command.paste.material_shortage",
                     "Not enough materials to paste. Missing %d types:",
@@ -622,44 +796,257 @@ public class SurvivalSchematicaEventListener {
             return;
         }
 
+        List<ItemStack> consumedStacks = buildConsumedMaterialStacks(materialCheck);
         Schematic undo = captureWorldRegion(
                 event.getWorld(),
-                SchematicaRuntime.originX,
-                SchematicaRuntime.originY,
-                SchematicaRuntime.originZ,
+                originX,
+                originY,
+                originZ,
                 schematic.getWidth(),
                 schematic.getHeight(),
                 schematic.getLength(),
                 copyIcon(schematic));
         if (undo == null) {
+            int returned = refundPrinterUndoMaterials(
+                    event.getWorld(),
+                    printerX,
+                    printerY,
+                    printerZ,
+                    printerInventory,
+                    consumedStacks);
+            syncPrinterInventoryToClients(event.getWorld(), printerX, printerY, printerZ, printerInventory);
             event.getPlayer().addChatMessage(I18n.tr("schematica.command.paste.undo_capture_failed", "Failed to capture undo snapshot."));
+            if (materialCheck.totalConsumed > 0) {
+                event.getPlayer().addChatMessage(I18n.trf(
+                        "schematica.command.printer.print.rollback",
+                        "Print aborted; rollback attempted for %d consumed materials (returned=%d, overflow dropped nearby).",
+                        materialCheck.totalConsumed,
+                        returned));
+            }
+            logPrinterTxn(event, txnId, "FAIL", String.format(Locale.ROOT,
+                    "undo_capture_failed, returned=%d",
+                    returned));
             return;
         }
-        SchematicaRuntime.setUndoSnapshot(
+        SchematicaRuntime.setPrinterUndoSnapshot(
                 undo,
-                SchematicaRuntime.originX,
-                SchematicaRuntime.originY,
-                SchematicaRuntime.originZ,
-                SchematicaRuntime.loadedSchematicName);
+                originX,
+                originY,
+                originZ,
+                schematicName,
+                printerX,
+                printerY,
+                printerZ,
+                consumedStacks);
 
         PasteResult result = pasteSchematic(
                 event.getWorld(),
                 schematic,
-                SchematicaRuntime.originX,
-                SchematicaRuntime.originY,
-                SchematicaRuntime.originZ,
+                originX,
+                originY,
+                originZ,
                 mode);
-        String name = SchematicaRuntime.loadedSchematicName == null
+        SchematicaRuntime.setPrinterPrintedSnapshot(
+                schematic,
+                originX,
+                originY,
+                originZ,
+                printerX,
+                printerY,
+                printerZ);
+        String name = schematicName == null
                 ? I18n.tr("schematica.command.value.unknown", "<unknown>")
-                : SchematicaRuntime.loadedSchematicName;
+                : schematicName;
         String failedSuffix = result.failed > 0
                 ? I18n.trf("schematica.command.paste.failed_suffix", ", failed=%d", result.failed)
                 : "";
+        String emeraldSuffix = materialCheck.requiredEmeralds > 0
+                ? I18n.trf("schematica.command.printer.print.emerald_suffix", ", emeraldUsed=%d", materialCheck.requiredEmeralds)
+                : "";
         event.getPlayer().addChatMessage(I18n.trf(
                 "schematica.command.printer.print.done",
-                "Printer [%d,%d,%d] pasted %s mode=%s, materialsUsed=%d, materialTypes=%d: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s",
+                "Printer [%d,%d,%d] pasted %s mode=%s, materialsUsed=%d, materialTypes=%d%s: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s",
                 printerX, printerY, printerZ, name, mode.id, materialCheck.totalConsumed, materialCheck.materialTypes,
-                result.placed, result.cleared, result.containersEmptied, result.unchanged, failedSuffix));
+                emeraldSuffix, result.placed, result.cleared, result.containersEmptied, result.unchanged, failedSuffix));
+        boolean printSucceeded = result.failed == 0;
+        boolean autoUnloaded = printSucceeded && SchematicaPrinterConfig.isAutoUnloadProjectionAfterPrintEnabled();
+        if (autoUnloaded) {
+            if (projection.uploadedFromClient && event.getPlayer() != null) {
+                SchematicaRuntime.clearUploadedPrinterProjection(event.getPlayer().entityId);
+            } else {
+                SchematicaRuntime.clearLoadedSchematic();
+            }
+            event.getPlayer().addChatMessage(I18n.tr(
+                    "schematica.command.printer.print.auto_unload",
+                    "Projection auto-unloaded after printer print."));
+        }
+        syncPrinterInventoryToClients(event.getWorld(), printerX, printerY, printerZ, printerInventory);
+        if (event.getPlayer() instanceof ServerPlayer) {
+            Network.sendToClient((ServerPlayer) event.getPlayer(), new S2CPrinterPrintResultPacket(
+                    printerX,
+                    printerY,
+                    printerZ,
+                    printSucceeded,
+                    autoUnloaded));
+        }
+        logPrinterTxn(event, txnId, "OK", String.format(Locale.ROOT,
+                "placed=%d, cleared=%d, unchanged=%d, failed=%d",
+                result.placed, result.cleared, result.unchanged, result.failed));
+    }
+
+    private PrintProjectionContext resolvePrinterProjectionContext(EntityPlayer player) {
+        if (player != null && SchematicaPrinterConfig.isClientProjectionUploadEnabled()) {
+            SchematicaRuntime.UploadedPrinterProjection uploaded = SchematicaRuntime.getUploadedPrinterProjection(player.entityId);
+            if (uploaded != null && uploaded.schematic != null) {
+                return new PrintProjectionContext(
+                        uploaded.schematic,
+                        uploaded.originX,
+                        uploaded.originY,
+                        uploaded.originZ,
+                        uploaded.schematicName,
+                        true);
+            }
+        }
+        if (!SchematicaRuntime.hasLoadedSchematic()) {
+            return null;
+        }
+        return new PrintProjectionContext(
+                SchematicaRuntime.loadedSchematic,
+                SchematicaRuntime.originX,
+                SchematicaRuntime.originY,
+                SchematicaRuntime.originZ,
+                SchematicaRuntime.loadedSchematicName,
+                false);
+    }
+
+    private void handlePrinterUndo(HandleChatCommandEvent event, String[] parts) {
+        if (parts.length < 6) {
+            event.getPlayer().addChatMessage(I18n.tr(
+                    "schematica.command.printer.undo.usage",
+                    "Usage: /schematica printer undo <x> <y> <z>"));
+            return;
+        }
+
+        int printerX;
+        int printerY;
+        int printerZ;
+        try {
+            printerX = Integer.parseInt(parts[3]);
+            printerY = Integer.parseInt(parts[4]);
+            printerZ = Integer.parseInt(parts[5]);
+        } catch (NumberFormatException e) {
+            event.getPlayer().addChatMessage(I18n.tr("schematica.command.coords_int", "Coordinates must be integers."));
+            return;
+        }
+
+        World world = event.getWorld();
+        if (world == null) {
+            event.getPlayer().addChatMessage(I18n.tr("schematica.command.no_world", "No world available."));
+            return;
+        }
+
+        IInventory printerInventory = getPrinterInventory(world, printerX, printerY, printerZ);
+        if (printerInventory == null) {
+            event.getPlayer().addChatMessage(I18n.trf(
+                    "schematica.command.printer.not_found",
+                    "Printer not found at [%d,%d,%d].",
+                    printerX, printerY, printerZ));
+            return;
+        }
+        String txnId = newPrinterTxnId("undo");
+        logPrinterTxn(event, txnId, "START", String.format(Locale.ROOT,
+                "printer=[%d,%d,%d]",
+                printerX, printerY, printerZ));
+
+        if (!SchematicaRuntime.hasPrinterUndoSnapshotAt(printerX, printerY, printerZ)) {
+            event.getPlayer().addChatMessage(I18n.trf(
+                    "schematica.command.printer.undo.no_snapshot",
+                    "No undo snapshot for printer [%d,%d,%d].",
+                    printerX, printerY, printerZ));
+            logPrinterTxn(event, txnId, "FAIL", "no_snapshot");
+            return;
+        }
+        if (!SchematicaRuntime.hasPrinterPrintedSnapshotAt(printerX, printerY, printerZ)) {
+            event.getPlayer().addChatMessage(I18n.trf(
+                    "schematica.command.printer.undo.integrity_missing",
+                    "Cannot verify undo integrity for printer [%d,%d,%d] (missing print snapshot).",
+                    printerX, printerY, printerZ));
+            logPrinterTxn(event, txnId, "FAIL", "integrity_snapshot_missing");
+            return;
+        }
+
+        PasteConflict integrityMismatch = findFirstSchematicMismatch(
+                world,
+                SchematicaRuntime.lastPrinterPrintedSchematic,
+                SchematicaRuntime.lastPrinterPrintedOriginX,
+                SchematicaRuntime.lastPrinterPrintedOriginY,
+                SchematicaRuntime.lastPrinterPrintedOriginZ,
+                false);
+        if (integrityMismatch != null) {
+            SchematicaRuntime.setProjectionAlertMarker(
+                    integrityMismatch.x,
+                    integrityMismatch.y,
+                    integrityMismatch.z,
+                    PROJECTION_ALERT_MARKER_TTL_MS,
+                    true);
+            event.getPlayer().addChatMessage(I18n.trf(
+                    "schematica.command.printer.undo.integrity_failed",
+                    "Undo blocked at [%d,%d,%d]: expected %s[%d:%d], found %s[%d:%d].",
+                    integrityMismatch.x, integrityMismatch.y, integrityMismatch.z,
+                    integrityMismatch.targetName, integrityMismatch.targetId, integrityMismatch.targetMeta,
+                    integrityMismatch.existingName, integrityMismatch.existingId, integrityMismatch.existingMeta));
+            logPrinterTxn(event, txnId, "FAIL", String.format(Locale.ROOT,
+                    "integrity_mismatch=[%d,%d,%d], expected=%d:%d, actual=%d:%d",
+                    integrityMismatch.x, integrityMismatch.y, integrityMismatch.z,
+                    integrityMismatch.targetId, integrityMismatch.targetMeta,
+                    integrityMismatch.existingId, integrityMismatch.existingMeta));
+            return;
+        }
+
+        ISchematic undoSchematic = SchematicaRuntime.lastPrinterUndoSchematic;
+        String undoBoundsError = validateRegionBounds(
+                SchematicaRuntime.lastPrinterUndoOriginX,
+                SchematicaRuntime.lastPrinterUndoOriginY,
+                SchematicaRuntime.lastPrinterUndoOriginZ,
+                undoSchematic.getWidth(),
+                undoSchematic.getHeight(),
+                undoSchematic.getLength());
+        if (undoBoundsError != null) {
+            event.getPlayer().addChatMessage(I18n.trf("schematica.command.printer.undo.bounds", "Cannot printer-undo: %s", undoBoundsError));
+            logPrinterTxn(event, txnId, "FAIL", "bounds=" + undoBoundsError);
+            return;
+        }
+
+        PasteResult result = pasteSchematic(
+                world,
+                undoSchematic,
+                SchematicaRuntime.lastPrinterUndoOriginX,
+                SchematicaRuntime.lastPrinterUndoOriginY,
+                SchematicaRuntime.lastPrinterUndoOriginZ,
+                PasteMode.REPLACE);
+        String label = SchematicaRuntime.lastPrinterUndoLabel == null
+                ? I18n.tr("schematica.command.value.unknown", "<unknown>")
+                : SchematicaRuntime.lastPrinterUndoLabel;
+        int materialsReturned = refundPrinterUndoMaterials(
+                world,
+                printerX,
+                printerY,
+                printerZ,
+                printerInventory,
+                SchematicaRuntime.lastPrinterUndoRefundStacks);
+        syncPrinterInventoryToClients(world, printerX, printerY, printerZ, printerInventory);
+        String failedSuffix = result.failed > 0
+                ? I18n.trf("schematica.command.paste.failed_suffix", ", failed=%d", result.failed)
+                : "";
+        SchematicaRuntime.clearPrinterUndoSnapshot();
+        SchematicaRuntime.clearProjectionAlertMarker();
+        event.getPlayer().addChatMessage(I18n.trf(
+                "schematica.command.printer.undo.done",
+                "Printer [%d,%d,%d] undo restored %s: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d, materialsReturned=%d%s",
+                printerX, printerY, printerZ, label, result.placed, result.cleared, result.containersEmptied, result.unchanged, materialsReturned, failedSuffix));
+        logPrinterTxn(event, txnId, "OK", String.format(Locale.ROOT,
+                "placed=%d, cleared=%d, unchanged=%d, failed=%d, materialsReturned=%d",
+                result.placed, result.cleared, result.unchanged, result.failed, materialsReturned));
     }
 
     private boolean handlePrinterProvide(HandleChatCommandEvent event, String[] parts, boolean sendFeedback) {
@@ -678,6 +1065,7 @@ public class SurvivalSchematicaEventListener {
         int itemId;
         int subtype;
         int amount = Integer.MAX_VALUE;
+        String txnId = null;
         try {
             printerX = Integer.parseInt(parts[3]);
             printerY = Integer.parseInt(parts[4]);
@@ -695,6 +1083,12 @@ public class SurvivalSchematicaEventListener {
             }
             return false;
         }
+        if (sendFeedback) {
+            txnId = newPrinterTxnId("provide");
+            logPrinterTxn(event, txnId, "START", String.format(Locale.ROOT,
+                    "printer=[%d,%d,%d], item=%d:%d, request=%d",
+                    printerX, printerY, printerZ, itemId, subtype, amount));
+        }
 
         if (itemId <= 0 || itemId >= Item.itemsList.length || Item.itemsList[itemId] == null) {
             if (sendFeedback) {
@@ -702,6 +1096,7 @@ public class SurvivalSchematicaEventListener {
                         "schematica.command.printer.provide.invalid_item",
                         "Invalid item id: %d",
                         itemId));
+                logPrinterTxn(event, txnId, "FAIL", "invalid_item_id=" + itemId);
             }
             return true;
         }
@@ -710,6 +1105,7 @@ public class SurvivalSchematicaEventListener {
                 event.getPlayer().addChatMessage(I18n.tr(
                         "schematica.command.printer.provide.usage",
                         "Usage: /schematica printer provide <x> <y> <z> <itemId> <subtype> [count]"));
+                logPrinterTxn(event, txnId, "FAIL", "invalid_amount=" + amount);
             }
             return false;
         }
@@ -721,6 +1117,7 @@ public class SurvivalSchematicaEventListener {
                 event.getPlayer().addChatMessage(I18n.tr(
                         "schematica.command.printer.provide.internal",
                         "Printer provide failed (missing world/player/inventory)."));
+                logPrinterTxn(event, txnId, "FAIL", "missing_world_or_player_inventory");
             }
             return true;
         }
@@ -732,16 +1129,21 @@ public class SurvivalSchematicaEventListener {
                         "schematica.command.printer.not_found",
                         "Printer not found at [%d,%d,%d].",
                         printerX, printerY, printerZ));
+                logPrinterTxn(event, txnId, "FAIL", "printer_not_found");
             }
             return true;
         }
 
         int moved = transferFromPlayerToPrinter(player, printerInventory, itemId, subtype, amount);
+        if (moved > 0) {
+            syncPrinterInventoryToClients(world, printerX, printerY, printerZ, printerInventory);
+        }
         if (sendFeedback) {
             if (moved <= 0) {
                 event.getPlayer().addChatMessage(I18n.tr(
                         "schematica.command.printer.provide.none",
                         "No matching items were moved."));
+                logPrinterTxn(event, txnId, "OK", "moved=0");
             } else {
                 ItemStack display = new ItemStack(Item.itemsList[itemId], 1, subtype);
                 int stored = countMaterialInInventory(printerInventory, new MaterialKey(itemId, subtype));
@@ -749,9 +1151,124 @@ public class SurvivalSchematicaEventListener {
                         "schematica.command.printer.provide.done",
                         "Provided %d x %s to printer [%d,%d,%d]. Stored=%d",
                         moved, display.getDisplayName(), printerX, printerY, printerZ, stored));
+                logPrinterTxn(event, txnId, "OK", String.format(Locale.ROOT,
+                        "moved=%d, stored=%d",
+                        moved, stored));
             }
         }
         return true;
+    }
+
+    private void handlePrinterHealth(HandleChatCommandEvent event, String[] parts) {
+        if (parts.length < 6) {
+            event.getPlayer().addChatMessage(I18n.tr(
+                    "schematica.command.printer.health.usage",
+                    "Usage: /schematica printer health <x> <y> <z>"));
+            return;
+        }
+
+        int printerX;
+        int printerY;
+        int printerZ;
+        try {
+            printerX = Integer.parseInt(parts[3]);
+            printerY = Integer.parseInt(parts[4]);
+            printerZ = Integer.parseInt(parts[5]);
+        } catch (NumberFormatException e) {
+            event.getPlayer().addChatMessage(I18n.tr("schematica.command.coords_int", "Coordinates must be integers."));
+            return;
+        }
+
+        World world = event.getWorld();
+        if (world == null) {
+            event.getPlayer().addChatMessage(I18n.tr("schematica.command.no_world", "No world available."));
+            return;
+        }
+
+        String txnId = newPrinterTxnId("health");
+        logPrinterTxn(event, txnId, "START", String.format(Locale.ROOT,
+                "printer=[%d,%d,%d]",
+                printerX, printerY, printerZ));
+
+        int blockId = world.getBlockId(printerX, printerY, printerZ);
+        boolean isPrinterBlock = blockId == SchematicaBlocks.SCHEMATICA_PRINTER.blockID;
+        TileEntity tileEntity = world.getBlockTileEntity(printerX, printerY, printerZ);
+        IInventory inventory = tileEntity instanceof IInventory ? (IInventory) tileEntity : null;
+        int totalSlots = inventory == null ? 0 : inventory.getSizeInventory();
+        int usedSlots = 0;
+        int totalItems = 0;
+        if (inventory != null) {
+            for (int slot = 0; slot < inventory.getSizeInventory(); ++slot) {
+                ItemStack stack = inventory.getStackInSlot(slot);
+                if (stack == null || stack.stackSize <= 0) {
+                    continue;
+                }
+                ++usedSlots;
+                totalItems += stack.stackSize;
+            }
+        }
+        boolean hasUndoSnapshot = SchematicaRuntime.hasPrinterUndoSnapshotAt(printerX, printerY, printerZ);
+        String blockName = safeBlockName(blockId);
+        String tileName = tileEntity == null ? "<none>" : tileEntity.getClass().getSimpleName();
+        event.getPlayer().addChatMessage(I18n.trf(
+                "schematica.command.printer.health.summary",
+                "Printer health [%d,%d,%d]: block=%s[%d], isPrinter=%s, tile=%s, inventory=%s, slots=%d/%d, storedItems=%d, undoSnapshot=%s",
+                printerX, printerY, printerZ,
+                blockName, blockId,
+                isPrinterBlock ? "true" : "false",
+                tileName,
+                inventory == null ? "missing" : "ok",
+                usedSlots, totalSlots, totalItems,
+                hasUndoSnapshot ? "true" : "false"));
+        logPrinterTxn(event, txnId, "OK", String.format(Locale.ROOT,
+                "isPrinter=%s, inventory=%s, slots=%d/%d, storedItems=%d, undoSnapshot=%s",
+                isPrinterBlock ? "true" : "false",
+                inventory == null ? "missing" : "ok",
+                usedSlots, totalSlots, totalItems,
+                hasUndoSnapshot ? "true" : "false"));
+    }
+
+    private void handlePrinterSync(HandleChatCommandEvent event, String[] parts, boolean sendFeedback) {
+        if (parts.length < 6) {
+            if (sendFeedback) {
+                event.getPlayer().addChatMessage(I18n.tr(
+                        "schematica.command.printer.sync.usage",
+                        "Usage: /schematica printer sync <x> <y> <z>"));
+            }
+            return;
+        }
+        int printerX;
+        int printerY;
+        int printerZ;
+        try {
+            printerX = Integer.parseInt(parts[3]);
+            printerY = Integer.parseInt(parts[4]);
+            printerZ = Integer.parseInt(parts[5]);
+        } catch (NumberFormatException e) {
+            if (sendFeedback) {
+                event.getPlayer().addChatMessage(I18n.tr("schematica.command.coords_int", "Coordinates must be integers."));
+            }
+            return;
+        }
+        World world = event.getWorld();
+        if (world == null) {
+            if (sendFeedback) {
+                event.getPlayer().addChatMessage(I18n.tr("schematica.command.no_world", "No world available."));
+            }
+            return;
+        }
+        IInventory printerInventory = getPrinterInventory(world, printerX, printerY, printerZ);
+        if (printerInventory == null) {
+            syncPrinterInventoryToClients(world, printerX, printerY, printerZ, null);
+            if (sendFeedback) {
+                event.getPlayer().addChatMessage(I18n.trf(
+                        "schematica.command.printer.not_found",
+                        "Printer not found at [%d,%d,%d].",
+                        printerX, printerY, printerZ));
+            }
+            return;
+        }
+        syncPrinterInventoryToClients(world, printerX, printerY, printerZ, printerInventory);
     }
 
     private IInventory getPrinterInventory(World world, int x, int y, int z) {
@@ -763,6 +1280,50 @@ public class SurvivalSchematicaEventListener {
         }
         TileEntity tileEntity = world.getBlockTileEntity(x, y, z);
         return tileEntity instanceof IInventory ? (IInventory) tileEntity : null;
+    }
+
+    private void syncPrinterInventoryToClients(World world, int x, int y, int z, IInventory printerInventory) {
+        if (world == null || world.isRemote) {
+            return;
+        }
+        Network.sendToAllPlayers(printerInventory == null
+                ? S2CPrinterInventorySnapshotPacket.missing(x, y, z)
+                : new S2CPrinterInventorySnapshotPacket(x, y, z, buildPrinterInventorySnapshotCounts(printerInventory)));
+        updateRuntimePrinterInventorySnapshot(x, y, z, printerInventory, System.currentTimeMillis());
+        if (printerInventory != null) {
+            printerInventory.onInventoryChanged();
+        }
+        world.markBlockForUpdate(x, y, z);
+        int blockId = world.getBlockId(x, y, z);
+        if (blockId > 0) {
+            world.func_96440_m(x, y, z, blockId);
+        }
+    }
+
+    private void updateRuntimePrinterInventorySnapshot(int x, int y, int z, IInventory printerInventory, long updatedAtMs) {
+        Map<String, Integer> counts = buildPrinterInventorySnapshotCounts(printerInventory);
+        if (counts == null) {
+            SchematicaRuntime.clearPrinterInventorySnapshot(x, y, z);
+            return;
+        }
+        SchematicaRuntime.setPrinterInventorySnapshot(x, y, z, counts, updatedAtMs);
+    }
+
+    private Map<String, Integer> buildPrinterInventorySnapshotCounts(IInventory printerInventory) {
+        if (printerInventory == null) {
+            return null;
+        }
+        Map<String, Integer> counts = new HashMap<String, Integer>();
+        for (int slot = 0; slot < printerInventory.getSizeInventory(); ++slot) {
+            ItemStack stack = printerInventory.getStackInSlot(slot);
+            if (stack == null || stack.itemID <= 0 || stack.stackSize <= 0) {
+                continue;
+            }
+            String key = stack.itemID + ":" + stack.getItemSubtype();
+            Integer old = counts.get(key);
+            counts.put(key, old == null ? stack.stackSize : old + stack.stackSize);
+        }
+        return counts;
     }
 
     private int transferFromPlayerToPrinter(EntityPlayer player, IInventory printerInventory, int itemId, int subtype, int maxAmount) {
@@ -861,6 +1422,106 @@ public class SurvivalSchematicaEventListener {
             total += stack.stackSize;
         }
         return total;
+    }
+
+    private List<ItemStack> buildConsumedMaterialStacks(MaterialCheckResult materialCheck) {
+        return materialCheck == null
+                ? new ArrayList<ItemStack>()
+                : buildMaterialStacks(materialCheck.consumedByType);
+    }
+
+    private List<ItemStack> buildMaterialStacks(Map<MaterialKey, Integer> materialCounts) {
+        List<ItemStack> stacks = new ArrayList<ItemStack>();
+        if (materialCounts == null || materialCounts.isEmpty()) {
+            return stacks;
+        }
+        for (Map.Entry<MaterialKey, Integer> entry : materialCounts.entrySet()) {
+            MaterialKey key = entry.getKey();
+            int total = entry.getValue() == null ? 0 : entry.getValue();
+            if (key == null || total <= 0) {
+                continue;
+            }
+            if (key.itemId <= 0 || key.itemId >= Item.itemsList.length || Item.itemsList[key.itemId] == null) {
+                continue;
+            }
+            ItemStack template = new ItemStack(Item.itemsList[key.itemId], 1, key.subtype);
+            int maxPerStack = Math.max(1, template.getMaxStackSize());
+            int remaining = total;
+            while (remaining > 0) {
+                int count = Math.min(remaining, maxPerStack);
+                ItemStack stack = template.copy();
+                stack.stackSize = count;
+                stacks.add(stack);
+                remaining -= count;
+            }
+        }
+        return stacks;
+    }
+
+    private int restoreMaterialsToInventory(IInventory inventory, Map<MaterialKey, Integer> materialCounts) {
+        if (inventory == null || materialCounts == null || materialCounts.isEmpty()) {
+            return 0;
+        }
+        int restored = 0;
+        List<ItemStack> stacks = buildMaterialStacks(materialCounts);
+        for (ItemStack stack : stacks) {
+            if (stack == null || stack.itemID <= 0 || stack.stackSize <= 0) {
+                continue;
+            }
+            restored += insertIntoInventory(inventory, stack, stack.stackSize);
+        }
+        if (restored > 0) {
+            inventory.onInventoryChanged();
+        }
+        return restored;
+    }
+
+    private int sumMaterialCounts(Map<MaterialKey, Integer> materialCounts) {
+        if (materialCounts == null || materialCounts.isEmpty()) {
+            return 0;
+        }
+        int total = 0;
+        for (Integer value : materialCounts.values()) {
+            if (value != null && value > 0) {
+                total += value;
+            }
+        }
+        return total;
+    }
+
+    private int refundPrinterUndoMaterials(World world, int x, int y, int z, IInventory printerInventory, List<ItemStack> refundStacks) {
+        if (world == null || printerInventory == null || refundStacks == null || refundStacks.isEmpty()) {
+            return 0;
+        }
+        int returned = 0;
+        for (ItemStack stack : refundStacks) {
+            if (stack == null || stack.itemID <= 0 || stack.stackSize <= 0) {
+                continue;
+            }
+            int inserted = insertIntoInventory(printerInventory, stack, stack.stackSize);
+            returned += inserted;
+            int leftover = stack.stackSize - inserted;
+            if (leftover > 0) {
+                ItemStack drop = stack.copy();
+                drop.stackSize = leftover;
+                dropItemStack(world, x, y, z, drop);
+            }
+        }
+        if (returned > 0) {
+            printerInventory.onInventoryChanged();
+        }
+        return returned;
+    }
+
+    private void dropItemStack(World world, int x, int y, int z, ItemStack stack) {
+        if (world == null || stack == null || stack.stackSize <= 0) {
+            return;
+        }
+        EntityItem entity = new EntityItem(world, (float) x + 0.5F, (float) y + 0.5F, (float) z + 0.5F, stack);
+        entity.motionX = 0.0F;
+        entity.motionY = 0.1F;
+        entity.motionZ = 0.0F;
+        world.spawnEntityInWorld(entity);
     }
 
     private void saveSelection(HandleChatCommandEvent event, int x1, int y1, int z1, int x2, int y2, int z2, File outFile, boolean loadAfterSave) {
@@ -1002,7 +1663,47 @@ public class SurvivalSchematicaEventListener {
         return null;
     }
 
+    private PasteConflict findFirstSchematicMismatch(
+            World world,
+            ISchematic schematic,
+            int originX,
+            int originY,
+            int originZ,
+            boolean requireAirMatch) {
+        if (world == null || schematic == null) {
+            return null;
+        }
+        for (int x = 0; x < schematic.getWidth(); ++x) {
+            for (int y = 0; y < schematic.getHeight(); ++y) {
+                for (int z = 0; z < schematic.getLength(); ++z) {
+                    Block expected = schematic.getBlock(x, y, z);
+                    int expectedId = expected == null ? 0 : expected.blockID;
+                    if (expectedId == 0 && !requireAirMatch) {
+                        continue;
+                    }
+                    int expectedMeta = schematic.getBlockMetadata(x, y, z) & 0xF;
+                    int wx = originX + x;
+                    int wy = originY + y;
+                    int wz = originZ + z;
+                    int existingId = world.getBlockId(wx, wy, wz);
+                    int existingMeta = world.getBlockMetadata(wx, wy, wz) & 0xF;
+                    if (existingId == expectedId && (expectedId == 0 || existingMeta == expectedMeta)) {
+                        continue;
+                    }
+                    return new PasteConflict(
+                            wx, wy, wz,
+                            existingId, existingMeta, safeBlockName(existingId),
+                            expectedId, expectedMeta, safeBlockName(expectedId));
+                }
+            }
+        }
+        return null;
+    }
+
     private String safeBlockName(int blockId) {
+        if (blockId == 0) {
+            return I18n.tr("schematica.command.value.air", "<air>");
+        }
         Block block = blockId >= 0 && blockId < Block.blocksList.length ? Block.blocksList[blockId] : null;
         return block == null ? I18n.tr("schematica.command.value.unknown", "<unknown>") : block.getLocalizedName();
     }
@@ -1032,6 +1733,7 @@ public class SurvivalSchematicaEventListener {
         Map<MaterialKey, Integer> required = new HashMap<MaterialKey, Integer>();
         Map<MaterialKey, ItemStack> displayStacks = new HashMap<MaterialKey, ItemStack>();
         Map<String, Integer> unsupported = new HashMap<String, Integer>();
+        int requiredBlocks = 0;
 
         for (int x = 0; x < schematic.getWidth(); ++x) {
             for (int y = 0; y < schematic.getHeight(); ++y) {
@@ -1070,7 +1772,29 @@ public class SurvivalSchematicaEventListener {
                         displayStacks.put(key, display);
                     }
                     result.totalConsumed += perPlacement;
+                    ++requiredBlocks;
                 }
+            }
+        }
+        result.totalRequiredBlocks = requiredBlocks;
+
+        int requiredEmeralds = SchematicaPrinterConfig.computeRequiredEmeralds(requiredBlocks);
+        result.requiredEmeralds = requiredEmeralds;
+        if (requiredEmeralds > 0) {
+            int emeraldItemId = SchematicaPrinterConfig.getEmeraldItemId();
+            int emeraldSubtype = SchematicaPrinterConfig.getEmeraldSubtype();
+            if (emeraldItemId > 0 && emeraldItemId < Item.itemsList.length && Item.itemsList[emeraldItemId] != null) {
+                MaterialKey emeraldKey = new MaterialKey(emeraldItemId, emeraldSubtype);
+                mergeCount(required, emeraldKey, requiredEmeralds);
+                if (!displayStacks.containsKey(emeraldKey)) {
+                    ItemStack emeraldDisplay = new ItemStack(Item.itemsList[emeraldItemId], 1, emeraldSubtype);
+                    displayStacks.put(emeraldKey, emeraldDisplay);
+                }
+                result.totalConsumed += requiredEmeralds;
+            } else {
+                result.shortages.add(new MaterialShortage(
+                        I18n.tr("schematica.command.printer.emerald_unavailable", "Emerald item is unavailable."),
+                        requiredEmeralds));
             }
         }
 
@@ -1106,12 +1830,26 @@ public class SurvivalSchematicaEventListener {
 
         for (Map.Entry<MaterialKey, Integer> entry : required.entrySet()) {
             if (!consumeFromInventory(inventory, entry.getKey(), entry.getValue())) {
+                int consumedBeforeFailure = sumMaterialCounts(result.consumedByType);
+                int restored = restoreMaterialsToInventory(inventory, result.consumedByType);
+                int notRestored = Math.max(0, consumedBeforeFailure - restored);
+                result.consumedByType.clear();
                 result.canPaste = false;
                 result.shortages.add(new MaterialShortage(
                         I18n.tr("schematica.command.paste.shortage.inventory_changed", "Inventory changed while consuming materials."),
                         entry.getValue()));
+                if (notRestored > 0) {
+                    result.shortages.add(new MaterialShortage(
+                            I18n.trf(
+                                    "schematica.command.paste.shortage.rollback_incomplete",
+                                    "Rollback incomplete: restored %d/%d consumed items.",
+                                    restored,
+                                    consumedBeforeFailure),
+                            notRestored));
+                }
                 return result;
             }
+            mergeCount(result.consumedByType, entry.getKey(), entry.getValue());
         }
 
         return result;
@@ -1317,6 +2055,12 @@ public class SurvivalSchematicaEventListener {
     }
 
     private boolean clearInventoryAt(World world, int x, int y, int z) {
+        if (world == null) {
+            return false;
+        }
+        if (world.getBlockId(x, y, z) == SchematicaBlocks.SCHEMATICA_PRINTER.blockID) {
+            return false;
+        }
         TileEntity tileEntity = world.getBlockTileEntity(x, y, z);
         if (!(tileEntity instanceof IInventory)) {
             return false;
@@ -1445,6 +2189,31 @@ public class SurvivalSchematicaEventListener {
         return world != null && world.isRemote;
     }
 
+    private static synchronized String newPrinterTxnId(String action) {
+        PRINTER_TXN_SEQ = (PRINTER_TXN_SEQ % 99999L) + 1L;
+        String prefix;
+        if (action == null || action.isEmpty()) {
+            prefix = "P";
+        } else {
+            prefix = action.substring(0, 1).toUpperCase(Locale.ROOT);
+        }
+        return prefix + String.format(Locale.ROOT, "%05d", PRINTER_TXN_SEQ);
+    }
+
+    private void logPrinterTxn(HandleChatCommandEvent event, String txnId, String phase, String detail) {
+        if (event == null || event.getPlayer() == null || txnId == null || txnId.isEmpty()) {
+            return;
+        }
+        String safePhase = phase == null || phase.isEmpty() ? "INFO" : phase;
+        String safeDetail = detail == null ? "" : detail;
+        event.getPlayer().addChatMessage(I18n.trf(
+                "schematica.command.printer.txn",
+                "[TXN %s][%s] %s",
+                txnId,
+                safePhase,
+                safeDetail));
+    }
+
     private void sendHelp(HandleChatCommandEvent event) {
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.title", "Survival Schematica commands:"));
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line1", "/schematica help | /schematica list"));
@@ -1455,7 +2224,7 @@ public class SurvivalSchematicaEventListener {
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line6", "/schematica save <x1> <y1> <z1> <x2> <y2> <z2> <name>"));
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line7", "/schematica create <name> (from stick selection)"));
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line8", "/schematica sel status | /schematica sel clear"));
-        event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line9", "/schematica printer print <x> <y> <z> [replace|solid|nonair] | /schematica printer provide <x> <y> <z> <itemId> <subtype> [count]"));
+        event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line9", "/schematica printer print <x> <y> <z> [replace|solid|nonair] | /schematica printer undo <x> <y> <z> | /schematica printer provide <x> <y> <z> <itemId> <subtype> [count] | /schematica printer health <x> <y> <z> | /schematica printer sync <x> <y> <z>"));
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.rule", "Rule: survival paste consumes inventory materials; no entity copy; printed containers are always empty."));
     }
 
@@ -1510,6 +2279,30 @@ public class SurvivalSchematicaEventListener {
         return base + ".schematic";
     }
 
+    private static final class PrintProjectionContext {
+        private final ISchematic schematic;
+        private final int originX;
+        private final int originY;
+        private final int originZ;
+        private final String schematicName;
+        private final boolean uploadedFromClient;
+
+        private PrintProjectionContext(
+                ISchematic schematic,
+                int originX,
+                int originY,
+                int originZ,
+                String schematicName,
+                boolean uploadedFromClient) {
+            this.schematic = schematic;
+            this.originX = originX;
+            this.originY = originY;
+            this.originZ = originZ;
+            this.schematicName = schematicName;
+            this.uploadedFromClient = uploadedFromClient;
+        }
+    }
+
     private enum PasteMode {
         REPLACE("replace"),
         SOLID("solid");
@@ -1532,7 +2325,10 @@ public class SurvivalSchematicaEventListener {
     private static final class MaterialCheckResult {
         private boolean canPaste;
         private int totalConsumed;
+        private int totalRequiredBlocks;
+        private int requiredEmeralds;
         private int materialTypes;
+        private final Map<MaterialKey, Integer> consumedByType = new HashMap<MaterialKey, Integer>();
         private final List<MaterialShortage> shortages = new ArrayList<MaterialShortage>();
     }
 

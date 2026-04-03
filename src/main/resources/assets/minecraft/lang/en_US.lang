@@ -4,16 +4,18 @@ gui.schematica_printer.title=Schematica Printer
 gui.schematica_printer.target=Target block
 gui.schematica_printer.target_line=Target block: [%d,%d,%d]
 gui.schematica_printer.no_files=No schematic files found in /schematics
-gui.schematica_printer.selected=Selected
-gui.schematica_printer.selected_line=Selected: %d/%d  %s%s
+gui.schematica_printer.selected=Candidate
+gui.schematica_printer.selected_line=Candidate: %d/%d  %s
+gui.schematica_printer.confirmed_line=Confirmed: %s%s
 gui.schematica_printer.dimensions= (%dx%dx%d)
 gui.schematica_printer.transform=Transform
 gui.schematica_printer.origin=North print origin
 gui.schematica_printer.transform_line=Transform: rot=%d  mirrorX=%s  mirrorZ=%s
 gui.schematica_printer.origin_line=North print origin: [%d,%d,%d]
-gui.schematica_printer.hotkeys=Enter/L load outline  P print  U undo  [ ] cycle  G/X/Z transform
+gui.schematica_printer.opacity_line=Projection opacity: ghost=%d%%  line=%d%%  (- / =)
+gui.schematica_printer.hotkeys=Enter/L confirm+load  C confirm+load  P print  U undo  [ ] cycle  G/X/Z transform  -/= opacity
 gui.schematica_printer.button.rescan=Rescan
-gui.schematica_printer.button.load=Load Outline
+gui.schematica_printer.button.load=Confirm & Load
 gui.schematica_printer.button.close=Close
 gui.schematica_printer.button.print=Print
 gui.schematica_printer.button.undo=Undo
@@ -23,16 +25,26 @@ gui.schematica_printer.button.mirror_z=MirrorZ
 gui.schematica_printer.button.rotate_state=Rotate:%d
 gui.schematica_printer.button.mirror_x_state=MirrorX:%s
 gui.schematica_printer.button.mirror_z_state=MirrorZ:%s
+gui.schematica_printer.button.alpha_down=Op-%d
+gui.schematica_printer.button.alpha_up=Op+%d
 gui.schematica_printer.value.on=On
 gui.schematica_printer.value.off=Off
+gui.schematica_printer.value.none=<none>
 gui.schematica_printer.status.put_files=Put .schematic files into /schematics.
 gui.schematica_printer.status.select_load=Select file, press Enter/L to load outline, then P to print.
+gui.schematica_printer.status.select_confirm=Select file, press Enter/L to confirm+load projection.
 gui.schematica_printer.status.no_selection=No schematic selected.
 gui.schematica_printer.status.failed_load=Failed to load selected schematic.
 gui.schematica_printer.status.outline_loaded=Outline loaded at [%d,%d,%d]
 gui.schematica_printer.status.printed=Printed with replace mode.
 gui.schematica_printer.status.print_requested=Print requested (using printer storage).
+gui.schematica_printer.status.print_requested_wait=Print requested (using printer storage). Waiting for completion...
+gui.schematica_printer.status.upload_failed=Failed to upload projection to server.
+gui.schematica_printer.status.print_requested_unselected=Print requested. Projection reset to unconfirmed.
+gui.schematica_printer.status.print_pending_timeout=Print still in progress or failed; selection kept.
 gui.schematica_printer.status.undo=Undo requested.
+gui.schematica_printer.status.no_confirmed=No confirmed schematic. Press Enter/L to confirm+load.
+gui.schematica_printer.status.opacity=Projection opacity updated: ghost=%d%% line=%d%%
 gui.schematica_printer.chat.projection_loaded=Projection loaded: %s -> [%d,%d,%d] (rot=%d, mirrorX=%s, mirrorZ=%s)
 gui.schematica_printer.chat.outline_ready=Outline ready. Press P to print, or Esc to inspect projection.
 gui.schematica_printer.chat.print_executed=Schematica printer: print requested.
@@ -40,15 +52,20 @@ gui.schematica_printer.supply.title=Supply Materials (click a row to provide tha
 gui.schematica_printer.supply.empty=No required materials to show.
 gui.schematica_printer.supply.scroll_hint=Drag the bar or use mouse wheel / Up / Down
 gui.schematica_printer.supply.entry=%s | need:%d stored:%d inv:%d missing:%d
+gui.schematica_printer.supply.no_printer=Printer block is missing or invalid.
+gui.schematica_printer.supply.already_enough=Printer already has enough of this material.
 gui.schematica_printer.supply.no_player_item=You do not have this item in inventory.
+gui.schematica_printer.supply.too_fast=Too fast; wait a moment before the next supply request.
 gui.schematica_printer.supply.provide_sent=Supply requested: %s x%d
+gui.schematica_printer.supply.syncing=Syncing printer inventory from server...
 gui.schematica_control.title=Schematica Control (M)
 gui.schematica_control.no_loaded=No schematic loaded (use /schematica load <name>)
 gui.schematica_control.loaded_line=Loaded: %s  %dx%dx%d
 gui.schematica_control.origin_line=Origin: [%d,%d,%d]
 gui.schematica_control.files_none=Files: none
 gui.schematica_control.files_line=Files: %d/%d  %s
-gui.schematica_control.hotkeys=Hotkeys: [ ] / L / C / U / H / 1 2 3 / WASDQE (P/O disabled)
+gui.schematica_control.hotkeys=Hotkeys: [ ] / L / C / P / O / U / H / 1 2 3 / WASDQE (P/O creative only)
+gui.schematica_control.opacity_line=Projection opacity: ghost=%d%%  line=%d%%  (- / =)
 gui.schematica_control.label.create_name=Create Name
 gui.schematica_control.label.move_x=Move X
 gui.schematica_control.label.move_y=Y
@@ -76,6 +93,8 @@ gui.schematica_control.button.nudge_y_pos=E +Y
 gui.schematica_control.button.nudge_y_neg=Q -Y
 gui.schematica_control.button.unload=K Unload
 gui.schematica_control.button.close=Esc Close
+gui.schematica_control.button.alpha_down=- Opacity (%d%%)
+gui.schematica_control.button.alpha_up=+ Opacity (%d%%)
 gui.schematica_control.button.move_apply=Enter Apply Move
 gui.schematica_control.msg.no_files=No schematic files found.
 gui.schematica_control.msg.move_invalid_int=Move fields must be valid integers.
@@ -147,6 +166,7 @@ schematica.command.paste.shortage.block_label=%s [id=%d,meta=%d]
 schematica.command.paste.shortage.item_fallback=item#%d:%d
 schematica.command.paste.shortage.entry=%s x%d
 schematica.command.value.unknown=<unknown>
+schematica.command.value.air=<air>
 schematica.command.bounds.invalid_size=invalid region size.
 schematica.command.bounds.y_outside=Y range %d..%d is outside world bounds %d..%d.
 schematica.command.bounds.xz_overflow=X/Z range overflow: [%d,%d]..[%d,%d].
@@ -155,19 +175,34 @@ schematica.command.help.line1=/schematica help | /schematica list
 schematica.command.help.line2=/schematica load <name> | /schematica unload | /schematica status
 schematica.command.help.line3=/schematica origin here | /schematica move <x> <y> <z> | /schematica nudge <dx> <dy> <dz>
 schematica.command.help.line4=/schematica rotate <90|180|270> | /schematica mirror <x|z>
-schematica.command.help.line5=/schematica paste <disabled in survival> | /schematica undo
+schematica.command.help.line5=/schematica paste <creative only, disabled in survival> | /schematica undo
 schematica.command.help.line6=/schematica save <x1> <y1> <z1> <x2> <y2> <z2> <name>
 schematica.command.help.line7=/schematica create <name> (from stick selection)
 schematica.command.help.line8=/schematica sel status | /schematica sel clear
-schematica.command.help.line9=/schematica printer print <x> <y> <z> [replace|solid|nonair] | /schematica printer provide <x> <y> <z> <itemId> <subtype> [count]
-schematica.command.printer.usage=Usage: /schematica printer <print|provide> ...
+schematica.command.help.line9=/schematica printer print <x> <y> <z> [replace|solid|nonair] | /schematica printer undo <x> <y> <z> | /schematica printer provide <x> <y> <z> <itemId> <subtype> [count] | /schematica printer health <x> <y> <z> | /schematica printer sync <x> <y> <z>
+schematica.command.printer.usage=Usage: /schematica printer <print|undo|provide|health|sync> ...
 schematica.command.printer.print.usage=Usage: /schematica printer print <x> <y> <z> [replace|solid|nonair]
+schematica.command.printer.print.no_projection=No projection is available for printer print. Load one on server, or enable printer.clientProjectionUpload.
 schematica.command.printer.print.blocked=Print blocked at [%d,%d,%d]: found %s[%d:%d], target is %s[%d:%d].
 schematica.command.printer.not_found=Printer not found at [%d,%d,%d].
-schematica.command.printer.print.done=Printer [%d,%d,%d] pasted %s mode=%s, materialsUsed=%d, materialTypes=%d: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s
+schematica.command.printer.print.rollback=Print aborted; rollback attempted for %d consumed materials (returned=%d, overflow dropped nearby).
+schematica.command.printer.print.emerald_suffix=, emeraldUsed=%d
+schematica.command.printer.print.done=Printer [%d,%d,%d] pasted %s mode=%s, materialsUsed=%d, materialTypes=%d%s: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s
+schematica.command.printer.print.auto_unload=Projection auto-unloaded after printer print.
+schematica.command.printer.undo.usage=Usage: /schematica printer undo <x> <y> <z>
+schematica.command.printer.undo.no_snapshot=No undo snapshot for printer [%d,%d,%d].
+schematica.command.printer.undo.integrity_missing=Cannot verify undo integrity for printer [%d,%d,%d] (missing print snapshot).
+schematica.command.printer.undo.integrity_failed=Undo blocked at [%d,%d,%d]: expected %s[%d:%d], found %s[%d:%d].
+schematica.command.printer.undo.bounds=Cannot printer-undo: %s
+schematica.command.printer.undo.done=Printer [%d,%d,%d] undo restored %s: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d, materialsReturned=%d%s
 schematica.command.printer.provide.usage=Usage: /schematica printer provide <x> <y> <z> <itemId> <subtype> [count]
 schematica.command.printer.provide.invalid_item=Invalid item id: %d
 schematica.command.printer.provide.internal=Printer provide failed (missing world/player/inventory).
 schematica.command.printer.provide.none=No matching items were moved.
 schematica.command.printer.provide.done=Provided %d x %s to printer [%d,%d,%d]. Stored=%d
+schematica.command.printer.health.usage=Usage: /schematica printer health <x> <y> <z>
+schematica.command.printer.health.summary=Printer health [%d,%d,%d]: block=%s[%d], isPrinter=%s, tile=%s, inventory=%s, slots=%d/%d, storedItems=%d, undoSnapshot=%s
+schematica.command.printer.sync.usage=Usage: /schematica printer sync <x> <y> <z>
+schematica.command.printer.emerald_unavailable=Emerald item is unavailable.
+schematica.command.printer.txn=[TXN %s][%s] %s
 schematica.command.help.rule=Rule: survival paste consumes inventory materials; no entity copy; printed containers are always empty.
