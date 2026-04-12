@@ -48,7 +48,7 @@ public abstract class MinecraftMixin {
     @Unique
     private static final String SCHEMATICA_MENU_KEY_DESCRIPTION = "key.schematica.menu";
     @Unique
-    private static final int SCHEMATICA_MENU_KEY_DEFAULT = Keyboard.KEY_M;
+    private static final int SCHEMATICA_MENU_KEY_DEFAULT = Keyboard.KEY_EQUALS;
     @Unique
     private static KeyBinding schematica$menuKeyBinding;
 
