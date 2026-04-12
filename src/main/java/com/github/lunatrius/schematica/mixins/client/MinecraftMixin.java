@@ -5,9 +5,11 @@ import com.github.lunatrius.schematica.SchematicaRuntime;
 import com.github.lunatrius.schematica.client.gui.GuiSchematicaControl;
 import com.github.lunatrius.schematica.util.I18n;
 import net.minecraft.EntityClientPlayerMP;
+import net.minecraft.GameSettings;
 import net.minecraft.GuiScreen;
 import net.minecraft.Item;
 import net.minecraft.ItemStack;
+import net.minecraft.KeyBinding;
 import net.minecraft.Minecraft;
 import net.minecraft.RaycastCollision;
 import org.lwjgl.input.Mouse;
@@ -31,6 +33,9 @@ public abstract class MinecraftMixin {
     public EntityClientPlayerMP thePlayer;
 
     @Shadow
+    public GameSettings gameSettings;
+
+    @Shadow
     public RaycastCollision objectMouseOver;
 
     @Shadow
@@ -40,20 +45,60 @@ public abstract class MinecraftMixin {
     private boolean schematica$menuKeyDown;
     @Unique
     private boolean schematica$selectionClickDown;
+    @Unique
+    private static final String SCHEMATICA_MENU_KEY_DESCRIPTION = "key.schematica.menu";
+    @Unique
+    private static final int SCHEMATICA_MENU_KEY_DEFAULT = Keyboard.KEY_M;
+    @Unique
+    private static KeyBinding schematica$menuKeyBinding;
 
     @Inject(method = "runTick", at = @At("RETURN"))
     private void schematica$onRunTick(CallbackInfo ci) {
-        boolean pressed = Keyboard.isKeyDown(Keyboard.KEY_M);
+        schematica$ensureMenuKeyBinding();
+        boolean pressed = schematica$menuKeyBinding != null
+                && schematica$menuKeyBinding.keyCode > 0
+                && Keyboard.isKeyDown(schematica$menuKeyBinding.keyCode);
         if (pressed
                 && !this.schematica$menuKeyDown
-                && this.currentScreen == null
-                && this.inGameHasFocus
-                && this.thePlayer != null) {
+                && schematica$canOpenMenu()) {
             this.displayGuiScreen(new GuiSchematicaControl());
         }
         this.schematica$menuKeyDown = pressed;
 
         schematica$handleSelectionStickClick();
+    }
+
+    @Unique
+    private boolean schematica$canOpenMenu() {
+        return this.currentScreen == null
+                && this.inGameHasFocus
+                && this.thePlayer != null;
+    }
+
+    @Unique
+    private void schematica$ensureMenuKeyBinding() {
+        if (this.gameSettings == null) {
+            return;
+        }
+        if (schematica$menuKeyBinding == null) {
+            schematica$menuKeyBinding = new KeyBinding(
+                    SCHEMATICA_MENU_KEY_DESCRIPTION,
+                    SCHEMATICA_MENU_KEY_DEFAULT);
+        }
+        KeyBinding[] current = this.gameSettings.keyBindings;
+        if (current == null || current.length == 0) {
+            this.gameSettings.keyBindings = new KeyBinding[]{schematica$menuKeyBinding};
+            return;
+        }
+        for (KeyBinding keyBinding : current) {
+            if (keyBinding == schematica$menuKeyBinding) {
+                return;
+            }
+        }
+        KeyBinding[] expanded = new KeyBinding[current.length + 1];
+        System.arraycopy(current, 0, expanded, 0, current.length);
+        expanded[current.length] = schematica$menuKeyBinding;
+        this.gameSettings.keyBindings = expanded;
     }
 
     @Unique

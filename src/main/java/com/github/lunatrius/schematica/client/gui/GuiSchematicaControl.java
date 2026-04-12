@@ -257,32 +257,34 @@ public class GuiSchematicaControl extends GuiScreen {
         boolean editingMoveFields = this.originXField.isFocused()
                 || this.originYField.isFocused()
                 || this.originZField.isFocused();
-        boolean editingFields = editingCreateField || editingMoveFields;
+
+        if (editingCreateField || editingMoveFields) {
+            if (keyCode == Keyboard.KEY_RETURN || keyCode == Keyboard.KEY_NUMPADENTER) {
+                if (editingCreateField) {
+                    applyCreateFromField();
+                } else {
+                    applyMoveFromFields();
+                }
+                return;
+            }
+            if (editingCreateField) {
+                if (this.createNameField.textboxKeyTyped(character, keyCode)) {
+                    updateButtonStates();
+                }
+                return;
+            }
+            if (this.originXField.textboxKeyTyped(character, keyCode)
+                    || this.originYField.textboxKeyTyped(character, keyCode)
+                    || this.originZField.textboxKeyTyped(character, keyCode)) {
+                updateButtonStates();
+            }
+            return;
+        }
 
         if (keyCode == Keyboard.KEY_RETURN || keyCode == Keyboard.KEY_NUMPADENTER) {
-            if (editingCreateField) {
-                applyCreateFromField();
-                return;
-            }
-            if (editingMoveFields) {
-                applyMoveFromFields();
-                return;
-            }
             if (triggerButton(ID_MOVE_APPLY)) {
                 return;
             }
-        }
-
-        if (this.createNameField.textboxKeyTyped(character, keyCode)
-                || this.originXField.textboxKeyTyped(character, keyCode)
-                || this.originYField.textboxKeyTyped(character, keyCode)
-                || this.originZField.textboxKeyTyped(character, keyCode)) {
-            updateButtonStates();
-            return;
-        }
-
-        if (editingFields) {
-            return;
         }
 
         if (handleHotkey(keyCode)) {
@@ -316,7 +318,7 @@ public class GuiSchematicaControl extends GuiScreen {
         this.drawDefaultBackground();
 
         int titleY = this.panelTop + 2;
-        this.drawCenteredString(this.fontRenderer, tr("gui.schematica_control.title", "Schematica Control (M)"), this.width / 2, titleY, 0xFFFFFF);
+        this.drawCenteredString(this.fontRenderer, tr("gui.schematica_control.title", "Schematica Control"), this.width / 2, titleY, 0xFFFFFF);
 
         int lineY = titleY + 12;
         ISchematic schematic = SchematicaRuntime.loadedSchematic;
@@ -379,6 +381,11 @@ public class GuiSchematicaControl extends GuiScreen {
 
     @Override
     public boolean doesGuiPauseGame() {
+        return false;
+    }
+
+    @Override
+    public boolean allowsImposedChat() {
         return false;
     }
 

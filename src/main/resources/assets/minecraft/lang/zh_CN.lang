@@ -59,7 +59,7 @@ gui.schematica_printer.supply.too_fast=请求过快，请稍后再试。
 gui.schematica_printer.supply.provide_sent=已请求供给：%s x%d
 gui.schematica_printer.supply.syncing=正在从服务端同步打印机库存...
 
-gui.schematica_control.title=Schematica 控制台 (M)
+gui.schematica_control.title=Schematica 控制台
 gui.schematica_control.no_loaded=当前未加载蓝图（使用 /schematica load <name>）
 gui.schematica_control.loaded_line=已加载: %s  %dx%dx%d
 gui.schematica_control.origin_line=原点: [%d,%d,%d]
@@ -102,6 +102,7 @@ gui.schematica_control.msg.move_invalid_int=移动坐标必须是整数。
 gui.schematica_control.msg.create_empty=创建名称不能为空。
 gui.schematica_control.msg.selection_missing=尚未设置选区。请先用木棍设置 Pos1/Pos2。
 gui.schematica_control.msg.paste_disabled=生存模式已禁用直接粘贴，请使用打印机方块 GUI。
+key.schematica.menu=打开 Schematica 控制台
 gui.schematica_control.value.unknown=<未知>
 
 schematica.selection.pos1_set=Schematica Pos1 已设置: [%d,%d,%d] (右键)

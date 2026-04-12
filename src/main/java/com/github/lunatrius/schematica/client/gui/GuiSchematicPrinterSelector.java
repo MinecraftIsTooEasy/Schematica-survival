@@ -435,6 +435,11 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         return false;
     }
 
+    @Override
+    public boolean allowsImposedChat() {
+        return false;
+    }
+
     private void refreshSchematicFiles() {
         String previousSelection = null;
         if (this.selectedFileIndex >= 0 && this.selectedFileIndex < this.schematicFiles.size()) {
