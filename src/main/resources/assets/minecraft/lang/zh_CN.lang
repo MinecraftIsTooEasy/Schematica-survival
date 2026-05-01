@@ -121,6 +121,7 @@ schematica.command.sel.cleared=选区已清空。
 schematica.command.load.usage=用法: /schematica load <name>
 schematica.command.load.not_found=未找到蓝图: %s
 schematica.command.load.failed=加载蓝图失败: %s
+schematica.command.load.failed_reason=原因: %s
 schematica.command.load.done=已加载 %s (%dx%dx%d) 到 [%d,%d,%d]
 schematica.command.status.no_loaded=当前未加载蓝图。使用 /schematica load <name>。
 schematica.command.status.loaded=已加载 %s (%dx%dx%d, 方块=%d) 原点 [%d,%d,%d], 撤回=%s
@@ -190,6 +191,9 @@ schematica.command.printer.print.no_projection=当前无可用于打印的投影
 schematica.command.printer.print.blocked=打印被阻止，坐标 [%d,%d,%d] 存在 %s[%d:%d]，目标方块为 %s[%d:%d]。
 schematica.command.printer.not_found=在 [%d,%d,%d] 未找到打印机。
 schematica.command.printer.print.rollback=打印已中止；已尝试回滚 %d 个已消耗材料（返还=%d，溢出物掉落在附近）。
+schematica.command.printer.print.queued=打印机 [%d,%d,%d] 已加入打印任务：%s，模式=%s，预计方块=%d。
+schematica.command.printer.print.queue_busy=打印队列繁忙，请稍后重试。
+schematica.command.printer.print.internal_failed=打印任务因内部错误失败。
 schematica.command.printer.print.emerald_suffix=，绿宝石消耗=%d
 schematica.command.printer.print.done=打印机 [%d,%d,%d] 已执行 %s，模式=%s，材料消耗=%d，材料种类=%d%s：放置=%d，清除=%d，清空容器=%d，未变化=%d%s
 schematica.command.printer.print.auto_unload=打印完成后已自动卸载投影。

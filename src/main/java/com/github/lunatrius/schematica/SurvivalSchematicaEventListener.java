@@ -6,10 +6,12 @@ import com.github.lunatrius.schematica.api.ISchematic;
 import com.github.lunatrius.schematica.block.SchematicaBlocks;
 import com.github.lunatrius.schematica.network.S2CPrinterInventorySnapshotPacket;
 import com.github.lunatrius.schematica.network.S2CPrinterPrintResultPacket;
+import com.github.lunatrius.schematica.reference.Reference;
 import com.github.lunatrius.schematica.util.I18n;
 import com.github.lunatrius.schematica.world.schematic.SchematicFormat;
 import com.github.lunatrius.schematica.world.storage.Schematic;
 import com.google.common.eventbus.Subscribe;
+import moddedmite.rustedironcore.api.event.listener.ITickListener;
 import moddedmite.rustedironcore.network.Network;
 import net.minecraft.Block;
 import net.minecraft.EntityItem;
@@ -22,6 +24,7 @@ import net.minecraft.Minecraft;
 import net.minecraft.TileEntity;
 import net.minecraft.World;
 import net.minecraft.ServerPlayer;
+import net.minecraft.server.MinecraftServer;
 import net.xiaoyu233.fml.reload.event.HandleChatCommandEvent;
 
 import java.io.File;
@@ -35,14 +38,24 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.WeakHashMap;
 
-public class SurvivalSchematicaEventListener {
+public class SurvivalSchematicaEventListener implements ITickListener {
     private static final long MAX_SAVE_VOLUME = 8_000_000L;
     private static final long MAX_PASTE_VOLUME = 8_000_000L;
     private static final int MIN_WORLD_Y = 0;
     private static final int MAX_WORLD_Y = 255;
     private static final long PROJECTION_ALERT_MARKER_TTL_MS = 12_000L;
+    private static final int PRINTER_PRINT_BLOCKS_PER_TICK = 512;
+    private static final int PRINTER_PRINT_MAX_ACTIVE_TASKS = 8;
     private static long PRINTER_TXN_SEQ = 0L;
+    private static final Map<ISchematic, NonAirIndexCache> NON_AIR_INDEX_CACHE = new WeakHashMap<ISchematic, NonAirIndexCache>();
+    private static final Map<String, ScheduledPrinterPrintTask> ACTIVE_PRINTER_PRINT_TASKS = new HashMap<String, ScheduledPrinterPrintTask>();
+
+    @Override
+    public void onServerTick(MinecraftServer server) {
+        this.tickScheduledPrinterPrintTasks();
+    }
 
     @Subscribe
     public void onCommand(HandleChatCommandEvent event) {
@@ -228,6 +241,10 @@ public class SurvivalSchematicaEventListener {
         ISchematic schematic = SchematicFormat.readFromFile(file);
         if (schematic == null) {
             event.getPlayer().addChatMessage(I18n.trf("schematica.command.load.failed", "Failed to load schematic: %s", file.getName()));
+            String reason = SchematicFormat.consumeLastReadError();
+            if (reason != null && !reason.trim().isEmpty()) {
+                event.getPlayer().addChatMessage(I18n.trf("schematica.command.load.failed_reason", "Reason: %s", reason));
+            }
             return;
         }
 
@@ -741,12 +758,13 @@ public class SurvivalSchematicaEventListener {
             return;
         }
 
-        PasteConflict conflict = findFirstPrinterCollision(
+        PrinterWorldStateSnapshot worldStateSnapshot = buildPrinterWorldStateSnapshot(
                 event.getWorld(),
                 schematic,
                 originX,
                 originY,
                 originZ);
+        PasteConflict conflict = worldStateSnapshot == null ? null : worldStateSnapshot.conflict;
         if (conflict != null) {
             SchematicaRuntime.setProjectionAlertMarker(
                     conflict.x,
@@ -773,7 +791,8 @@ public class SurvivalSchematicaEventListener {
                 originX,
                 originY,
                 originZ,
-                mode);
+                mode,
+                worldStateSnapshot);
         if (!materialCheck.canPaste) {
             logPrinterTxn(event, txnId, "FAIL", String.format(Locale.ROOT,
                     "material_shortage_types=%d",
@@ -839,59 +858,80 @@ public class SurvivalSchematicaEventListener {
                 printerZ,
                 consumedStacks);
 
-        PasteResult result = pasteSchematic(
-                event.getWorld(),
-                schematic,
-                originX,
-                originY,
-                originZ,
-                mode);
-        SchematicaRuntime.setPrinterPrintedSnapshot(
-                schematic,
-                originX,
-                originY,
-                originZ,
-                printerX,
-                printerY,
-                printerZ);
-        String name = schematicName == null
-                ? I18n.tr("schematica.command.value.unknown", "<unknown>")
-                : schematicName;
-        String failedSuffix = result.failed > 0
-                ? I18n.trf("schematica.command.paste.failed_suffix", ", failed=%d", result.failed)
-                : "";
-        String emeraldSuffix = materialCheck.requiredEmeralds > 0
-                ? I18n.trf("schematica.command.printer.print.emerald_suffix", ", emeraldUsed=%d", materialCheck.requiredEmeralds)
-                : "";
-        event.getPlayer().addChatMessage(I18n.trf(
-                "schematica.command.printer.print.done",
-                "Printer [%d,%d,%d] pasted %s mode=%s, materialsUsed=%d, materialTypes=%d%s: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s",
-                printerX, printerY, printerZ, name, mode.id, materialCheck.totalConsumed, materialCheck.materialTypes,
-                emeraldSuffix, result.placed, result.cleared, result.containersEmptied, result.unchanged, failedSuffix));
-        boolean printSucceeded = result.failed == 0;
-        boolean autoUnloaded = printSucceeded && SchematicaPrinterConfig.isAutoUnloadProjectionAfterPrintEnabled();
-        if (autoUnloaded) {
-            if (projection.uploadedFromClient && event.getPlayer() != null) {
-                SchematicaRuntime.clearUploadedPrinterProjection(event.getPlayer().entityId);
-            } else {
-                SchematicaRuntime.clearLoadedSchematic();
+        String printerTaskKey = buildPrinterTaskKey(event.getWorld(), printerX, printerY, printerZ);
+        synchronized (ACTIVE_PRINTER_PRINT_TASKS) {
+            if (ACTIVE_PRINTER_PRINT_TASKS.containsKey(printerTaskKey)) {
+                int returned = refundPrinterUndoMaterials(
+                        event.getWorld(),
+                        printerX,
+                        printerY,
+                        printerZ,
+                        printerInventory,
+                        consumedStacks);
+                SchematicaRuntime.clearPrinterUndoSnapshot();
+                syncPrinterInventoryToClients(event.getWorld(), printerX, printerY, printerZ, printerInventory);
+                event.getPlayer().addChatMessage(I18n.trf(
+                        "schematica.command.printer.print.rollback",
+                        "Print aborted; rollback attempted for %d consumed materials (returned=%d, overflow dropped nearby).",
+                        materialCheck.totalConsumed,
+                        returned));
+                logPrinterTxn(event, txnId, "FAIL", "printer_busy_existing_task");
+                return;
             }
-            event.getPlayer().addChatMessage(I18n.tr(
-                    "schematica.command.printer.print.auto_unload",
-                    "Projection auto-unloaded after printer print."));
-        }
-        syncPrinterInventoryToClients(event.getWorld(), printerX, printerY, printerZ, printerInventory);
-        if (event.getPlayer() instanceof ServerPlayer) {
-            Network.sendToClient((ServerPlayer) event.getPlayer(), new S2CPrinterPrintResultPacket(
+            if (ACTIVE_PRINTER_PRINT_TASKS.size() >= PRINTER_PRINT_MAX_ACTIVE_TASKS) {
+                int returned = refundPrinterUndoMaterials(
+                        event.getWorld(),
+                        printerX,
+                        printerY,
+                        printerZ,
+                        printerInventory,
+                        consumedStacks);
+                SchematicaRuntime.clearPrinterUndoSnapshot();
+                syncPrinterInventoryToClients(event.getWorld(), printerX, printerY, printerZ, printerInventory);
+                event.getPlayer().addChatMessage(I18n.tr("schematica.command.printer.print.queue_busy", "Printer queue is busy. Try again shortly."));
+                event.getPlayer().addChatMessage(I18n.trf(
+                        "schematica.command.printer.print.rollback",
+                        "Print aborted; rollback attempted for %d consumed materials (returned=%d, overflow dropped nearby).",
+                        materialCheck.totalConsumed,
+                        returned));
+                logPrinterTxn(event, txnId, "FAIL", "printer_queue_full");
+                return;
+            }
+
+            ScheduledPrinterPrintTask task = new ScheduledPrinterPrintTask(
+                    printerTaskKey,
+                    event.getWorld(),
+                    schematic,
+                    schematicName,
+                    originX,
+                    originY,
+                    originZ,
+                    mode,
                     printerX,
                     printerY,
                     printerZ,
-                    printSucceeded,
-                    autoUnloaded));
+                    event.getPlayer() == null ? -1 : event.getPlayer().entityId,
+                    projection.uploadedFromClient,
+                    materialCheck.totalConsumed,
+                    materialCheck.materialTypes,
+                    materialCheck.requiredEmeralds,
+                    txnId);
+            ACTIVE_PRINTER_PRINT_TASKS.put(printerTaskKey, task);
         }
-        logPrinterTxn(event, txnId, "OK", String.format(Locale.ROOT,
-                "placed=%d, cleared=%d, unchanged=%d, failed=%d",
-                result.placed, result.cleared, result.unchanged, result.failed));
+        syncPrinterInventoryToClients(event.getWorld(), printerX, printerY, printerZ, printerInventory);
+        event.getPlayer().addChatMessage(I18n.trf(
+                "schematica.command.printer.print.queued",
+                "Printer [%d,%d,%d] queued print task: %s mode=%s, estimated blocks=%d.",
+                printerX,
+                printerY,
+                printerZ,
+                schematicName == null ? I18n.tr("schematica.command.value.unknown", "<unknown>") : schematicName,
+                mode.id,
+                schematic.getWidth() * schematic.getHeight() * schematic.getLength()));
+        logPrinterTxn(event, txnId, "QUEUE", String.format(Locale.ROOT,
+                "queued, blocks=%d, perTick=%d",
+                schematic.getWidth() * schematic.getHeight() * schematic.getLength(),
+                PRINTER_PRINT_BLOCKS_PER_TICK));
     }
 
     private PrintProjectionContext resolvePrinterProjectionContext(EntityPlayer player) {
@@ -1578,6 +1618,51 @@ public class SurvivalSchematicaEventListener {
 
     private PasteResult pasteSchematic(World world, ISchematic schematic, int originX, int originY, int originZ, PasteMode mode) {
         PasteResult result = new PasteResult();
+        if (mode == PasteMode.SOLID) {
+            NonAirIndexCache cache = getOrBuildNonAirIndexCache(schematic);
+            int width = schematic.getWidth();
+            int length = schematic.getLength();
+            for (int i = 0; i < cache.count; ++i) {
+                int index = cache.indices[i];
+                int x = index % width;
+                int yz = index / width;
+                int y = yz / length;
+                int z = yz % length;
+                int wx = originX + x;
+                int wy = originY + y;
+                int wz = originZ + z;
+
+                Block block = schematic.getBlock(x, y, z);
+                if (block == null || block.blockID == 0) {
+                    continue;
+                }
+
+                int metadata = schematic.getBlockMetadata(x, y, z);
+                int existingIdBefore = world.getBlockId(wx, wy, wz);
+                int existingMetaBefore = world.getBlockMetadata(wx, wy, wz);
+                if (existingIdBefore == block.blockID && existingMetaBefore == (metadata & 0xF)) {
+                    ++result.unchanged;
+                    continue;
+                }
+
+                boolean success = world.setBlock(wx, wy, wz, block.blockID, metadata, 2);
+                int placedId = world.getBlockId(wx, wy, wz);
+                int placedMeta = world.getBlockMetadata(wx, wy, wz);
+                if (success) {
+                    ++result.placed;
+                } else if (placedId == block.blockID && placedMeta == (metadata & 0xF)) {
+                    ++result.unchanged;
+                } else {
+                    ++result.failed;
+                }
+
+                if (placedId == block.blockID && clearInventoryAt(world, wx, wy, wz)) {
+                    ++result.containersEmptied;
+                }
+            }
+            return result;
+        }
+
         for (int x = 0; x < schematic.getWidth(); ++x) {
             for (int y = 0; y < schematic.getHeight(); ++y) {
                 for (int z = 0; z < schematic.getLength(); ++z) {
@@ -1632,33 +1717,37 @@ public class SurvivalSchematicaEventListener {
         if (world == null || schematic == null) {
             return null;
         }
-        for (int x = 0; x < schematic.getWidth(); ++x) {
-            for (int y = 0; y < schematic.getHeight(); ++y) {
-                for (int z = 0; z < schematic.getLength(); ++z) {
-                    Block target = schematic.getBlock(x, y, z);
-                    if (target == null || target.blockID == 0) {
-                        continue;
-                    }
-
-                    int targetMeta = schematic.getBlockMetadata(x, y, z) & 0xF;
-                    int wx = originX + x;
-                    int wy = originY + y;
-                    int wz = originZ + z;
-                    int existingId = world.getBlockId(wx, wy, wz);
-                    int existingMeta = world.getBlockMetadata(wx, wy, wz);
-                    if (existingId == 0) {
-                        continue;
-                    }
-                    if (existingId == target.blockID && existingMeta == targetMeta) {
-                        continue;
-                    }
-
-                    return new PasteConflict(
-                            wx, wy, wz,
-                            existingId, existingMeta, safeBlockName(existingId),
-                            target.blockID, targetMeta, safeBlockName(target.blockID));
-                }
+        NonAirIndexCache cache = getOrBuildNonAirIndexCache(schematic);
+        int width = schematic.getWidth();
+        int length = schematic.getLength();
+        for (int i = 0; i < cache.count; ++i) {
+            int index = cache.indices[i];
+            int x = index % width;
+            int yz = index / width;
+            int y = yz / length;
+            int z = yz % length;
+            Block target = schematic.getBlock(x, y, z);
+            if (target == null || target.blockID == 0) {
+                continue;
             }
+
+            int targetMeta = schematic.getBlockMetadata(x, y, z) & 0xF;
+            int wx = originX + x;
+            int wy = originY + y;
+            int wz = originZ + z;
+            int existingId = world.getBlockId(wx, wy, wz);
+            int existingMeta = world.getBlockMetadata(wx, wy, wz);
+            if (existingId == 0) {
+                continue;
+            }
+            if (existingId == target.blockID && existingMeta == targetMeta) {
+                continue;
+            }
+
+            return new PasteConflict(
+                    wx, wy, wz,
+                    existingId, existingMeta, safeBlockName(existingId),
+                    target.blockID, targetMeta, safeBlockName(target.blockID));
         }
         return null;
     }
@@ -1673,6 +1762,38 @@ public class SurvivalSchematicaEventListener {
         if (world == null || schematic == null) {
             return null;
         }
+        if (!requireAirMatch) {
+            NonAirIndexCache cache = getOrBuildNonAirIndexCache(schematic);
+            int width = schematic.getWidth();
+            int length = schematic.getLength();
+            for (int i = 0; i < cache.count; ++i) {
+                int index = cache.indices[i];
+                int x = index % width;
+                int yz = index / width;
+                int y = yz / length;
+                int z = yz % length;
+                Block expected = schematic.getBlock(x, y, z);
+                int expectedId = expected == null ? 0 : expected.blockID;
+                if (expectedId == 0) {
+                    continue;
+                }
+                int expectedMeta = schematic.getBlockMetadata(x, y, z) & 0xF;
+                int wx = originX + x;
+                int wy = originY + y;
+                int wz = originZ + z;
+                int existingId = world.getBlockId(wx, wy, wz);
+                int existingMeta = world.getBlockMetadata(wx, wy, wz) & 0xF;
+                if (existingId == expectedId && existingMeta == expectedMeta) {
+                    continue;
+                }
+                return new PasteConflict(
+                        wx, wy, wz,
+                        existingId, existingMeta, safeBlockName(existingId),
+                        expectedId, expectedMeta, safeBlockName(expectedId));
+            }
+            return null;
+        }
+
         for (int x = 0; x < schematic.getWidth(); ++x) {
             for (int y = 0; y < schematic.getHeight(); ++y) {
                 for (int z = 0; z < schematic.getLength(); ++z) {
@@ -1723,6 +1844,18 @@ public class SurvivalSchematicaEventListener {
     }
 
     private MaterialCheckResult checkAndConsumePasteMaterialsFromInventory(IInventory inventory, World world, ISchematic schematic, int originX, int originY, int originZ, PasteMode mode) {
+        return checkAndConsumePasteMaterialsFromInventory(inventory, world, schematic, originX, originY, originZ, mode, null);
+    }
+
+    private MaterialCheckResult checkAndConsumePasteMaterialsFromInventory(
+            IInventory inventory,
+            World world,
+            ISchematic schematic,
+            int originX,
+            int originY,
+            int originZ,
+            PasteMode mode,
+            PrinterWorldStateSnapshot worldStateSnapshot) {
         MaterialCheckResult result = new MaterialCheckResult();
         result.canPaste = true;
         if (inventory == null || world == null || schematic == null) {
@@ -1733,48 +1866,87 @@ public class SurvivalSchematicaEventListener {
         Map<MaterialKey, Integer> required = new HashMap<MaterialKey, Integer>();
         Map<MaterialKey, ItemStack> displayStacks = new HashMap<MaterialKey, ItemStack>();
         Map<String, Integer> unsupported = new HashMap<String, Integer>();
+        Map<Integer, ItemStack> placementCostCache = new HashMap<Integer, ItemStack>();
+        Map<Integer, String> unsupportedLabelCache = new HashMap<Integer, String>();
         int requiredBlocks = 0;
 
-        for (int x = 0; x < schematic.getWidth(); ++x) {
-            for (int y = 0; y < schematic.getHeight(); ++y) {
-                for (int z = 0; z < schematic.getLength(); ++z) {
-                    Block block = schematic.getBlock(x, y, z);
-                    if (block == null || block.blockID == 0) {
-                        continue;
-                    }
-                    int metadata = schematic.getBlockMetadata(x, y, z);
-                    int wx = originX + x;
-                    int wy = originY + y;
-                    int wz = originZ + z;
-                    if (!needsMaterialForPlacement(world, wx, wy, wz, block.blockID, metadata, mode)) {
-                        continue;
-                    }
-                    if (isDoorUpperHalf(block, metadata)) {
-                        continue;
-                    }
+        NonAirIndexCache cache = getOrBuildNonAirIndexCache(schematic);
+        int[] existingPacked = worldStateSnapshot != null && worldStateSnapshot.matches(cache)
+                ? worldStateSnapshot.existingPacked
+                : null;
+        int width = schematic.getWidth();
+        int length = schematic.getLength();
+        for (int i = 0; i < cache.count; ++i) {
+            int index = cache.indices[i];
+            int x = index % width;
+            int yz = index / width;
+            int y = yz / length;
+            int z = yz % length;
+            Block block = schematic.getBlock(x, y, z);
+            if (block == null || block.blockID == 0) {
+                continue;
+            }
+            int metadata = schematic.getBlockMetadata(x, y, z);
+            int wx = originX + x;
+            int wy = originY + y;
+            int wz = originZ + z;
+            int existingId;
+            int existingMeta;
+            if (existingPacked != null && i < existingPacked.length) {
+                int packed = existingPacked[i];
+                existingId = unpackExistingId(packed);
+                existingMeta = unpackExistingMeta(packed);
+            } else {
+                existingId = world.getBlockId(wx, wy, wz);
+                existingMeta = world.getBlockMetadata(wx, wy, wz);
+            }
+            if (!needsMaterialForPlacement(existingId, existingMeta, block.blockID, metadata, mode)) {
+                continue;
+            }
+            if (isDoorUpperHalf(block, metadata)) {
+                continue;
+            }
 
-                    ItemStack cost = resolvePlacementCost(block, metadata);
-                    if (cost == null || cost.itemID <= 0 || cost.stackSize <= 0) {
-                        String blockLabel = I18n.trf(
+            int costKey = toPlacementCostCacheKey(block.blockID, metadata);
+            ItemStack cost = placementCostCache.get(Integer.valueOf(costKey));
+            if (cost == null) {
+                cost = resolvePlacementCost(block, metadata);
+                if (cost == null || cost.itemID <= 0 || cost.stackSize <= 0) {
+                    String blockLabel = unsupportedLabelCache.get(Integer.valueOf(costKey));
+                    if (blockLabel == null) {
+                        blockLabel = I18n.trf(
                                 "schematica.command.paste.shortage.block_label",
                                 "%s [id=%d,meta=%d]",
                                 block.getLocalizedName(), block.blockID, metadata & 0xF);
-                        mergeCount(unsupported, blockLabel, 1);
-                        continue;
+                        unsupportedLabelCache.put(Integer.valueOf(costKey), blockLabel);
                     }
-
-                    int perPlacement = Math.max(1, cost.stackSize);
-                    MaterialKey key = new MaterialKey(cost.itemID, cost.getItemSubtype());
-                    mergeCount(required, key, perPlacement);
-                    if (!displayStacks.containsKey(key)) {
-                        ItemStack display = cost.copy();
-                        display.stackSize = 1;
-                        displayStacks.put(key, display);
-                    }
-                    result.totalConsumed += perPlacement;
-                    ++requiredBlocks;
+                    mergeCount(unsupported, blockLabel, 1);
+                    continue;
                 }
+                ItemStack normalizedCost = cost.copy();
+                normalizedCost.stackSize = Math.max(1, normalizedCost.stackSize);
+                placementCostCache.put(Integer.valueOf(costKey), normalizedCost);
+                cost = normalizedCost;
             }
+            if (cost == null || cost.itemID <= 0 || cost.stackSize <= 0) {
+                String blockLabel = I18n.trf(
+                        "schematica.command.paste.shortage.block_label",
+                        "%s [id=%d,meta=%d]",
+                        block.getLocalizedName(), block.blockID, metadata & 0xF);
+                mergeCount(unsupported, blockLabel, 1);
+                continue;
+            }
+
+            int perPlacement = Math.max(1, cost.stackSize);
+            MaterialKey key = new MaterialKey(cost.itemID, cost.getItemSubtype());
+            mergeCount(required, key, perPlacement);
+            if (!displayStacks.containsKey(key)) {
+                ItemStack display = cost.copy();
+                display.stackSize = 1;
+                displayStacks.put(key, display);
+            }
+            result.totalConsumed += perPlacement;
+            ++requiredBlocks;
         }
         result.totalRequiredBlocks = requiredBlocks;
 
@@ -1853,15 +2025,6 @@ public class SurvivalSchematicaEventListener {
         }
 
         return result;
-    }
-
-    private boolean needsMaterialForPlacement(World world, int x, int y, int z, int sourceBlockId, int sourceMeta, PasteMode mode) {
-        if (mode != PasteMode.REPLACE && mode != PasteMode.SOLID) {
-            return true;
-        }
-        int existingId = world.getBlockId(x, y, z);
-        int existingMeta = world.getBlockMetadata(x, y, z);
-        return existingId != sourceBlockId || existingMeta != (sourceMeta & 0xF);
     }
 
     private boolean isDoorUpperHalf(Block block, int metadata) {
@@ -2106,6 +2269,8 @@ public class SurvivalSchematicaEventListener {
         for (int x = 0; x < source.getWidth(); ++x) {
             for (int y = 0; y < source.getHeight(); ++y) {
                 for (int z = 0; z < source.getLength(); ++z) {
+                    Block sourceBlock = source.getBlock(x, y, z);
+                    int sourceMeta = source.getBlockMetadata(x, y, z);
                     int nx;
                     int nz;
                     if (angle == 90) {
@@ -2118,11 +2283,77 @@ public class SurvivalSchematicaEventListener {
                         nx = z;
                         nz = source.getWidth() - 1 - x;
                     }
-                    rotated.setBlock(nx, y, nz, source.getBlock(x, y, z), source.getBlockMetadata(x, y, z));
+                    int rotatedMeta = adjustMetadataForRotation(sourceBlock, sourceMeta, angle);
+                    rotated.setBlock(nx, y, nz, sourceBlock, rotatedMeta);
                 }
             }
         }
         return rotated;
+    }
+
+    private int adjustMetadataForRotation(Block block, int metadata, int angle) {
+        if (block == null || !isStairBlock(block)) {
+            return metadata;
+        }
+        return rotateStairMetadataCounterClockwise(metadata, angle);
+    }
+
+    private boolean isStairBlock(Block block) {
+        String className = block.getClass().getSimpleName();
+        return className != null && className.toLowerCase(Locale.ROOT).contains("stair");
+    }
+
+    private int rotateStairMetadataCounterClockwise(int metadata, int angle) {
+        int upsideDownBit = metadata & 0x4;
+        int facingBits = metadata & 0x3;
+        int rotatedFacing;
+        if (angle == 180) {
+            rotatedFacing = rotateStairFacing180(facingBits);
+        } else if (angle == 90) {
+            rotatedFacing = rotateStairFacingClockwise(facingBits);
+        } else {
+            rotatedFacing = rotateStairFacingCounterClockwise(facingBits);
+        }
+        return upsideDownBit | rotatedFacing;
+    }
+
+    private int rotateStairFacingClockwise(int facingBits) {
+        if (facingBits == 0) {
+            return 2;
+        }
+        if (facingBits == 1) {
+            return 3;
+        }
+        if (facingBits == 2) {
+            return 1;
+        }
+        return 0;
+    }
+
+    private int rotateStairFacingCounterClockwise(int facingBits) {
+        if (facingBits == 0) {
+            return 3;
+        }
+        if (facingBits == 1) {
+            return 2;
+        }
+        if (facingBits == 2) {
+            return 0;
+        }
+        return 1;
+    }
+
+    private int rotateStairFacing180(int facingBits) {
+        if (facingBits == 0) {
+            return 1;
+        }
+        if (facingBits == 1) {
+            return 0;
+        }
+        if (facingBits == 2) {
+            return 3;
+        }
+        return 2;
     }
 
     private ISchematic mirrorSchematic(ISchematic source, String axis) {
@@ -2279,6 +2510,227 @@ public class SurvivalSchematicaEventListener {
         return base + ".schematic";
     }
 
+    private void tickScheduledPrinterPrintTasks() {
+        List<ScheduledPrinterPrintTask> tasks;
+        synchronized (ACTIVE_PRINTER_PRINT_TASKS) {
+            if (ACTIVE_PRINTER_PRINT_TASKS.isEmpty()) {
+                return;
+            }
+            tasks = new ArrayList<ScheduledPrinterPrintTask>(ACTIVE_PRINTER_PRINT_TASKS.values());
+        }
+        for (ScheduledPrinterPrintTask task : tasks) {
+            if (task == null || task.completed) {
+                removeScheduledTask(task);
+                continue;
+            }
+            boolean done;
+            try {
+                done = task.processTick(PRINTER_PRINT_BLOCKS_PER_TICK, this);
+            } catch (Throwable t) {
+                Reference.logger.error("Scheduled printer task failed unexpectedly", t);
+                task.completed = true;
+                task.failedHard = true;
+                done = true;
+            }
+            if (!done) {
+                continue;
+            }
+            finishScheduledPrinterTask(task);
+            removeScheduledTask(task);
+        }
+    }
+
+    private static void removeScheduledTask(ScheduledPrinterPrintTask task) {
+        if (task == null) {
+            return;
+        }
+        synchronized (ACTIVE_PRINTER_PRINT_TASKS) {
+            ACTIVE_PRINTER_PRINT_TASKS.remove(task.taskKey);
+        }
+    }
+
+    private void finishScheduledPrinterTask(ScheduledPrinterPrintTask task) {
+        if (task == null) {
+            return;
+        }
+        SchematicaRuntime.setPrinterPrintedSnapshot(
+                task.schematic,
+                task.originX,
+                task.originY,
+                task.originZ,
+                task.printerX,
+                task.printerY,
+                task.printerZ);
+        IInventory printerInventory = getPrinterInventory(task.world, task.printerX, task.printerY, task.printerZ);
+        syncPrinterInventoryToClients(task.world, task.printerX, task.printerY, task.printerZ, printerInventory);
+
+        EntityPlayer player = task.resolvePlayer();
+        String name = task.schematicName == null
+                ? I18n.tr("schematica.command.value.unknown", "<unknown>")
+                : task.schematicName;
+        String failedSuffix = task.result.failed > 0
+                ? I18n.trf("schematica.command.paste.failed_suffix", ", failed=%d", task.result.failed)
+                : "";
+        String emeraldSuffix = task.requiredEmeralds > 0
+                ? I18n.trf("schematica.command.printer.print.emerald_suffix", ", emeraldUsed=%d", task.requiredEmeralds)
+                : "";
+        boolean printSucceeded = !task.failedHard && task.result.failed == 0;
+        boolean autoUnloaded = printSucceeded && SchematicaPrinterConfig.isAutoUnloadProjectionAfterPrintEnabled();
+        if (autoUnloaded) {
+            if (task.uploadedFromClient && task.playerEntityId > 0) {
+                SchematicaRuntime.clearUploadedPrinterProjection(task.playerEntityId);
+            } else {
+                SchematicaRuntime.clearLoadedSchematic();
+            }
+        }
+
+        if (player != null) {
+            player.addChatMessage(I18n.trf(
+                    "schematica.command.printer.print.done",
+                    "Printer [%d,%d,%d] pasted %s mode=%s, materialsUsed=%d, materialTypes=%d%s: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s",
+                    task.printerX, task.printerY, task.printerZ, name, task.mode.id, task.totalConsumed, task.materialTypes,
+                    emeraldSuffix, task.result.placed, task.result.cleared, task.result.containersEmptied, task.result.unchanged, failedSuffix));
+            if (autoUnloaded) {
+                player.addChatMessage(I18n.tr(
+                        "schematica.command.printer.print.auto_unload",
+                        "Projection auto-unloaded after printer print."));
+            }
+            if (task.failedHard) {
+                player.addChatMessage(I18n.tr("schematica.command.printer.print.internal_failed", "Printer print task failed due to an internal error."));
+            }
+            if (player instanceof ServerPlayer) {
+                Network.sendToClient((ServerPlayer) player, new S2CPrinterPrintResultPacket(
+                        task.printerX,
+                        task.printerY,
+                        task.printerZ,
+                        printSucceeded,
+                        autoUnloaded));
+            }
+        }
+
+        Reference.logger.info(
+                "Printer task {} finished: world={}, printer=[{},{},{}], placed={}, cleared={}, unchanged={}, failed={}, hardFailed={}",
+                task.txnId,
+                Integer.valueOf(System.identityHashCode(task.world)),
+                Integer.valueOf(task.printerX),
+                Integer.valueOf(task.printerY),
+                Integer.valueOf(task.printerZ),
+                Integer.valueOf(task.result.placed),
+                Integer.valueOf(task.result.cleared),
+                Integer.valueOf(task.result.unchanged),
+                Integer.valueOf(task.result.failed),
+                Boolean.valueOf(task.failedHard));
+    }
+
+    private static String buildPrinterTaskKey(World world, int printerX, int printerY, int printerZ) {
+        int worldId = world == null ? 0 : System.identityHashCode(world);
+        return worldId + ":" + printerX + "," + printerY + "," + printerZ;
+    }
+
+    private PrinterWorldStateSnapshot buildPrinterWorldStateSnapshot(
+            World world,
+            ISchematic schematic,
+            int originX,
+            int originY,
+            int originZ) {
+        if (world == null || schematic == null) {
+            return null;
+        }
+        NonAirIndexCache cache = getOrBuildNonAirIndexCache(schematic);
+        int[] existingPacked = new int[cache.count];
+        int width = schematic.getWidth();
+        int length = schematic.getLength();
+        for (int i = 0; i < cache.count; ++i) {
+            int index = cache.indices[i];
+            int x = index % width;
+            int yz = index / width;
+            int y = yz / length;
+            int z = yz % length;
+            Block target = schematic.getBlock(x, y, z);
+            if (target == null || target.blockID == 0) {
+                existingPacked[i] = packExistingState(0, 0);
+                continue;
+            }
+
+            int wx = originX + x;
+            int wy = originY + y;
+            int wz = originZ + z;
+            int existingId = world.getBlockId(wx, wy, wz);
+            int existingMeta = world.getBlockMetadata(wx, wy, wz);
+            existingPacked[i] = packExistingState(existingId, existingMeta);
+
+            int targetMeta = schematic.getBlockMetadata(x, y, z) & 0xF;
+            if (existingId != 0 && !(existingId == target.blockID && existingMeta == targetMeta)) {
+                PasteConflict conflict = new PasteConflict(
+                        wx, wy, wz,
+                        existingId, existingMeta, safeBlockName(existingId),
+                        target.blockID, targetMeta, safeBlockName(target.blockID));
+                return new PrinterWorldStateSnapshot(cache, existingPacked, conflict);
+            }
+        }
+        return new PrinterWorldStateSnapshot(cache, existingPacked, null);
+    }
+
+    private static int packExistingState(int existingId, int existingMeta) {
+        return ((existingId & 0xFFFF) << 16) | (existingMeta & 0xFFFF);
+    }
+
+    private static int unpackExistingId(int packed) {
+        return (packed >>> 16) & 0xFFFF;
+    }
+
+    private static int unpackExistingMeta(int packed) {
+        return packed & 0xFFFF;
+    }
+
+    private boolean needsMaterialForPlacement(int existingId, int existingMeta, int sourceBlockId, int sourceMeta, PasteMode mode) {
+        if (mode != PasteMode.REPLACE && mode != PasteMode.SOLID) {
+            return true;
+        }
+        return existingId != sourceBlockId || existingMeta != (sourceMeta & 0xF);
+    }
+
+    private static int toPlacementCostCacheKey(int blockId, int metadata) {
+        return (blockId << 8) | (metadata & 0xFF);
+    }
+
+    private static synchronized NonAirIndexCache getOrBuildNonAirIndexCache(ISchematic schematic) {
+        if (schematic == null) {
+            return new NonAirIndexCache(0, 0, 0, new int[0], 0);
+        }
+        NonAirIndexCache cached = NON_AIR_INDEX_CACHE.get(schematic);
+        int width = schematic.getWidth();
+        int height = schematic.getHeight();
+        int length = schematic.getLength();
+        if (cached != null && cached.matches(width, height, length)) {
+            return cached;
+        }
+
+        int expectedVolume = Math.max(0, width * height * length);
+        int[] indices = new int[Math.min(expectedVolume, 4096)];
+        int count = 0;
+        for (int x = 0; x < width; ++x) {
+            for (int y = 0; y < height; ++y) {
+                for (int z = 0; z < length; ++z) {
+                    Block block = schematic.getBlock(x, y, z);
+                    if (block == null || block.blockID == 0) {
+                        continue;
+                    }
+                    if (count >= indices.length) {
+                        int newSize = Math.max(indices.length * 2, count + 1);
+                        int[] expanded = new int[newSize];
+                        System.arraycopy(indices, 0, expanded, 0, indices.length);
+                        indices = expanded;
+                    }
+                    indices[count++] = x + (y * length + z) * width;
+                }
+            }
+        }
+        NonAirIndexCache rebuilt = new NonAirIndexCache(width, height, length, indices, count);
+        NON_AIR_INDEX_CACHE.put(schematic, rebuilt);
+        return rebuilt;
+    }
+
     private static final class PrintProjectionContext {
         private final ISchematic schematic;
         private final int originX;
@@ -2300,6 +2752,187 @@ public class SurvivalSchematicaEventListener {
             this.originZ = originZ;
             this.schematicName = schematicName;
             this.uploadedFromClient = uploadedFromClient;
+        }
+    }
+
+    private static final class PrinterWorldStateSnapshot {
+        private final NonAirIndexCache cache;
+        private final int[] existingPacked;
+        private final PasteConflict conflict;
+
+        private PrinterWorldStateSnapshot(NonAirIndexCache cache, int[] existingPacked, PasteConflict conflict) {
+            this.cache = cache;
+            this.existingPacked = existingPacked;
+            this.conflict = conflict;
+        }
+
+        private boolean matches(NonAirIndexCache cache) {
+            return this.cache == cache;
+        }
+    }
+
+    private static final class NonAirIndexCache {
+        private final int width;
+        private final int height;
+        private final int length;
+        private final int[] indices;
+        private final int count;
+
+        private NonAirIndexCache(int width, int height, int length, int[] indices, int count) {
+            this.width = width;
+            this.height = height;
+            this.length = length;
+            this.indices = indices;
+            this.count = count;
+        }
+
+        private boolean matches(int width, int height, int length) {
+            return this.width == width && this.height == height && this.length == length;
+        }
+    }
+
+    private static final class ScheduledPrinterPrintTask {
+        private final String taskKey;
+        private final World world;
+        private final ISchematic schematic;
+        private final String schematicName;
+        private final int originX;
+        private final int originY;
+        private final int originZ;
+        private final PasteMode mode;
+        private final int printerX;
+        private final int printerY;
+        private final int printerZ;
+        private final int playerEntityId;
+        private final boolean uploadedFromClient;
+        private final int totalConsumed;
+        private final int materialTypes;
+        private final int requiredEmeralds;
+        private final String txnId;
+        private final int width;
+        private final int height;
+        private final int length;
+        private final int totalVolume;
+        private int cursor;
+        private final PasteResult result = new PasteResult();
+        private boolean completed;
+        private boolean failedHard;
+
+        private ScheduledPrinterPrintTask(
+                String taskKey,
+                World world,
+                ISchematic schematic,
+                String schematicName,
+                int originX,
+                int originY,
+                int originZ,
+                PasteMode mode,
+                int printerX,
+                int printerY,
+                int printerZ,
+                int playerEntityId,
+                boolean uploadedFromClient,
+                int totalConsumed,
+                int materialTypes,
+                int requiredEmeralds,
+                String txnId) {
+            this.taskKey = taskKey;
+            this.world = world;
+            this.schematic = schematic;
+            this.schematicName = schematicName;
+            this.originX = originX;
+            this.originY = originY;
+            this.originZ = originZ;
+            this.mode = mode;
+            this.printerX = printerX;
+            this.printerY = printerY;
+            this.printerZ = printerZ;
+            this.playerEntityId = playerEntityId;
+            this.uploadedFromClient = uploadedFromClient;
+            this.totalConsumed = totalConsumed;
+            this.materialTypes = materialTypes;
+            this.requiredEmeralds = requiredEmeralds;
+            this.txnId = txnId;
+            this.width = schematic == null ? 0 : schematic.getWidth();
+            this.height = schematic == null ? 0 : schematic.getHeight();
+            this.length = schematic == null ? 0 : schematic.getLength();
+            this.totalVolume = Math.max(0, this.width * this.height * this.length);
+        }
+
+        private boolean processTick(int budget, SurvivalSchematicaEventListener helper) {
+            if (this.completed) {
+                return true;
+            }
+            if (helper == null || this.world == null || this.schematic == null || this.totalVolume <= 0) {
+                this.completed = true;
+                this.failedHard = true;
+                return true;
+            }
+            int steps = 0;
+            while (steps < budget && this.cursor < this.totalVolume) {
+                int index = this.cursor++;
+                ++steps;
+                int x = index % this.width;
+                int yz = index / this.width;
+                int y = yz / this.length;
+                int z = yz % this.length;
+                int wx = this.originX + x;
+                int wy = this.originY + y;
+                int wz = this.originZ + z;
+
+                Block block = this.schematic.getBlock(x, y, z);
+                if (block == null || block.blockID == 0) {
+                    if (this.mode == PasteMode.REPLACE) {
+                        boolean success = this.world.setBlockToAir(wx, wy, wz, 2);
+                        if (success) {
+                            ++this.result.cleared;
+                        } else if (this.world.getBlockId(wx, wy, wz) == 0) {
+                            ++this.result.unchanged;
+                        } else {
+                            ++this.result.failed;
+                        }
+                    }
+                    continue;
+                }
+
+                int metadata = this.schematic.getBlockMetadata(x, y, z);
+                int existingIdBefore = this.world.getBlockId(wx, wy, wz);
+                int existingMetaBefore = this.world.getBlockMetadata(wx, wy, wz);
+                if (existingIdBefore == block.blockID && existingMetaBefore == (metadata & 0xF)) {
+                    ++this.result.unchanged;
+                    continue;
+                }
+
+                boolean success = this.world.setBlock(wx, wy, wz, block.blockID, metadata, 2);
+                int placedId = this.world.getBlockId(wx, wy, wz);
+                int placedMeta = this.world.getBlockMetadata(wx, wy, wz);
+                if (success) {
+                    ++this.result.placed;
+                } else if (placedId == block.blockID && placedMeta == (metadata & 0xF)) {
+                    ++this.result.unchanged;
+                } else {
+                    ++this.result.failed;
+                }
+                if (placedId == block.blockID && helper.clearInventoryAt(this.world, wx, wy, wz)) {
+                    ++this.result.containersEmptied;
+                }
+            }
+            if (this.cursor >= this.totalVolume) {
+                this.completed = true;
+            }
+            return this.completed;
+        }
+
+        private EntityPlayer resolvePlayer() {
+            if (this.world == null || this.playerEntityId <= 0) {
+                return null;
+            }
+            try {
+                net.minecraft.Entity entity = this.world.getEntityByID(this.playerEntityId);
+                return entity instanceof EntityPlayer ? (EntityPlayer) entity : null;
+            } catch (Throwable ignored) {
+                return null;
+            }
         }
     }
 

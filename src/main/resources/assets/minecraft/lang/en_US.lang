@@ -118,6 +118,7 @@ schematica.command.sel.cleared=Selection cleared.
 schematica.command.load.usage=Usage: /schematica load <name>
 schematica.command.load.not_found=Schematic not found: %s
 schematica.command.load.failed=Failed to load schematic: %s
+schematica.command.load.failed_reason=Reason: %s
 schematica.command.load.done=Loaded %s (%dx%dx%d) at [%d,%d,%d]
 schematica.command.status.no_loaded=No schematic loaded. Use /schematica load <name>.
 schematica.command.status.loaded=Loaded %s (%dx%dx%d, blocks=%d) origin [%d,%d,%d], undo=%s
@@ -187,6 +188,9 @@ schematica.command.printer.print.no_projection=No projection is available for pr
 schematica.command.printer.print.blocked=Print blocked at [%d,%d,%d]: found %s[%d:%d], target is %s[%d:%d].
 schematica.command.printer.not_found=Printer not found at [%d,%d,%d].
 schematica.command.printer.print.rollback=Print aborted; rollback attempted for %d consumed materials (returned=%d, overflow dropped nearby).
+schematica.command.printer.print.queued=Printer [%d,%d,%d] queued print task: %s mode=%s, estimated blocks=%d.
+schematica.command.printer.print.queue_busy=Printer queue is busy. Try again shortly.
+schematica.command.printer.print.internal_failed=Printer print task failed due to an internal error.
 schematica.command.printer.print.emerald_suffix=, emeraldUsed=%d
 schematica.command.printer.print.done=Printer [%d,%d,%d] pasted %s mode=%s, materialsUsed=%d, materialTypes=%d%s: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s
 schematica.command.printer.print.auto_unload=Projection auto-unloaded after printer print.

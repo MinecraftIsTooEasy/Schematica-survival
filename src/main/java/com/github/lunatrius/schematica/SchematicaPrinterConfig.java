@@ -17,6 +17,7 @@ public final class SchematicaPrinterConfig {
     private static final String KEY_BLOCKS_PER_EMERALD = "printer.blocksPerEmerald";
     private static final String KEY_AUTO_UNLOAD_PROJECTION_AFTER_PRINT = "printer.autoUnloadProjectionAfterPrint";
     private static final String KEY_CLIENT_PROJECTION_UPLOAD = "printer.clientProjectionUpload";
+    private static final String KEY_SCHEMATIC_STRICT_REMAP = "schematic.strictRemap";
     private static final String KEY_PROJECTION_GHOST_ALPHA_SOLID = "projection.ghostAlphaSolid";
     private static final String KEY_PROJECTION_GHOST_ALPHA_TRANSLUCENT = "projection.ghostAlphaTranslucent";
     private static final String KEY_PROJECTION_LINE_ALPHA = "projection.lineAlpha";
@@ -30,6 +31,7 @@ public final class SchematicaPrinterConfig {
     private static final int DEFAULT_BLOCKS_PER_EMERALD = 32;
     private static final boolean DEFAULT_AUTO_UNLOAD_PROJECTION_AFTER_PRINT = true;
     private static final boolean DEFAULT_CLIENT_PROJECTION_UPLOAD = false;
+    private static final boolean DEFAULT_SCHEMATIC_STRICT_REMAP = false;
     private static final int DEFAULT_EMERALD_ITEM_ID = 388;
     private static final int DEFAULT_EMERALD_SUBTYPE = 0;
     private static final float DEFAULT_PROJECTION_GHOST_ALPHA_SOLID = 0.35F;
@@ -40,6 +42,7 @@ public final class SchematicaPrinterConfig {
     private static int blocksPerEmerald = DEFAULT_BLOCKS_PER_EMERALD;
     private static boolean autoUnloadProjectionAfterPrint = DEFAULT_AUTO_UNLOAD_PROJECTION_AFTER_PRINT;
     private static boolean clientProjectionUpload = DEFAULT_CLIENT_PROJECTION_UPLOAD;
+    private static boolean schematicStrictRemap = DEFAULT_SCHEMATIC_STRICT_REMAP;
     private static float projectionGhostAlphaSolid = DEFAULT_PROJECTION_GHOST_ALPHA_SOLID;
     private static float projectionGhostAlphaTranslucent = DEFAULT_PROJECTION_GHOST_ALPHA_TRANSLUCENT;
     private static float projectionLineAlpha = DEFAULT_PROJECTION_LINE_ALPHA;
@@ -75,6 +78,9 @@ public final class SchematicaPrinterConfig {
         clientProjectionUpload = parseBoolean(
                 properties.getProperty(KEY_CLIENT_PROJECTION_UPLOAD),
                 DEFAULT_CLIENT_PROJECTION_UPLOAD);
+        schematicStrictRemap = parseBoolean(
+                properties.getProperty(KEY_SCHEMATIC_STRICT_REMAP),
+                DEFAULT_SCHEMATIC_STRICT_REMAP);
         projectionGhostAlphaSolid = clampAlpha(
                 parseFloat(properties.getProperty(KEY_PROJECTION_GHOST_ALPHA_SOLID), DEFAULT_PROJECTION_GHOST_ALPHA_SOLID),
                 DEFAULT_PROJECTION_GHOST_ALPHA_SOLID);
@@ -103,6 +109,10 @@ public final class SchematicaPrinterConfig {
 
     public static synchronized boolean isClientProjectionUploadEnabled() {
         return clientProjectionUpload;
+    }
+
+    public static synchronized boolean isSchematicStrictRemapEnabled() {
+        return schematicStrictRemap;
     }
 
     public static synchronized int getEmeraldItemId() {
@@ -424,6 +434,7 @@ public final class SchematicaPrinterConfig {
         properties.setProperty(KEY_BLOCKS_PER_EMERALD, Integer.toString(blocksPerEmerald));
         properties.setProperty(KEY_AUTO_UNLOAD_PROJECTION_AFTER_PRINT, Boolean.toString(autoUnloadProjectionAfterPrint));
         properties.setProperty(KEY_CLIENT_PROJECTION_UPLOAD, Boolean.toString(clientProjectionUpload));
+        properties.setProperty(KEY_SCHEMATIC_STRICT_REMAP, Boolean.toString(schematicStrictRemap));
         properties.setProperty(KEY_PROJECTION_GHOST_ALPHA_SOLID, Float.toString(projectionGhostAlphaSolid));
         properties.setProperty(KEY_PROJECTION_GHOST_ALPHA_TRANSLUCENT, Float.toString(projectionGhostAlphaTranslucent));
         properties.setProperty(KEY_PROJECTION_LINE_ALPHA, Float.toString(projectionLineAlpha));

@@ -3,7 +3,7 @@
 	"id": "schematica_survival",
 	"version": "${version}",
 	"depends": {
-		"fishmodloader": ">=3.4.2",
+		"fishmodloader": ">=3.4.0",
 		"rusted_iron_core": ">=1.5.0"
 	},
 	"environment": "*",

@@ -25,6 +25,7 @@ import java.util.List;
 public final class SchematicProjectionRenderer {
     private static final int MAX_RENDER_BLOCKS = 12000;
     private static final double BOX_EPSILON = 0.002;
+    private static ProjectionRenderCache projectionCache;
 
     private static final int FACE_DOWN = 1;
     private static final int FACE_UP = 1 << 1;
@@ -91,6 +92,14 @@ public final class SchematicProjectionRenderer {
                 int originX = SchematicaRuntime.originX;
                 int originY = SchematicaRuntime.originY;
                 int originZ = SchematicaRuntime.originZ;
+                ProjectionRenderCache cache = getOrBuildProjectionCache(
+                        schematic,
+                        originX,
+                        originY,
+                        originZ,
+                        width,
+                        height,
+                        length);
                 IBlockAccess schematicAccess = new SchematicBlockAccess(
                         schematic,
                         mc.theWorld,
@@ -114,6 +123,8 @@ public final class SchematicProjectionRenderer {
                         tessellator,
                         renderBlocks,
                         schematic,
+                        cache.pass0Indices,
+                        cache.pass0Count,
                         originX,
                         originY,
                         originZ,
@@ -130,6 +141,8 @@ public final class SchematicProjectionRenderer {
                         tessellator,
                         renderBlocks,
                         schematic,
+                        cache.pass1Indices,
+                        cache.pass1Count,
                         originX,
                         originY,
                         originZ,
@@ -144,6 +157,7 @@ public final class SchematicProjectionRenderer {
                         null);
                 GL11.glPolygonOffset(0.0F, 0.0F);
                 GL11.glDisable(GL11.GL_POLYGON_OFFSET_FILL);
+                collectChestEntries(chestEntries, cache, schematic, originX, originY, originZ, width, length);
                 renderGhostChests(renderBlocks, chestEntries, camX, camY, camZ, ghostAlphaSolid);
 
                 // Outline pass: keep through-geometry readability.
@@ -154,47 +168,45 @@ public final class SchematicProjectionRenderer {
                 tessellator.startDrawing(GL11.GL_LINES);
 
                 int rendered = 0;
-                outer:
-                for (int x = 0; x < width; ++x) {
-                    for (int y = 0; y < height; ++y) {
-                        for (int z = 0; z < length; ++z) {
-                            Block block = schematic.getBlock(x, y, z);
-                            if (block == null || block.blockID == 0) {
-                                continue;
-                            }
-                            if (++rendered > MAX_RENDER_BLOCKS) {
-                                break outer;
-                            }
-
-                            int exposedFaces = getExposedFaces(schematic, x, y, z, width, height, length);
-                            if (exposedFaces == 0) {
-                                continue;
-                            }
-                            int worldX = originX + x;
-                            int worldY = originY + y;
-                            int worldZ = originZ + z;
-                            boolean markerMatch = markerActive
-                                    && worldX == markerX
-                                    && worldY == markerY
-                                    && worldZ == markerZ;
-                            if (markerMatch) {
-                                markerDrawnFromProjection = true;
-                                tessellator.setColorRGBA_F(1.0F, 0.2F, 0.2F, lineAlpha);
-                            } else {
-                                tessellator.setColorRGBA_F(0.15F, 0.85F, 1.0F, lineAlpha);
-                            }
-
-                            double minX = worldX - camX - BOX_EPSILON;
-                            double minY = worldY - camY - BOX_EPSILON;
-                            double minZ = worldZ - camZ - BOX_EPSILON;
-                            AxisAlignedBB bb = AxisAlignedBB.getBoundingBox(
-                                    minX, minY, minZ,
-                                    minX + 1.0 + BOX_EPSILON * 2.0,
-                                    minY + 1.0 + BOX_EPSILON * 2.0,
-                                    minZ + 1.0 + BOX_EPSILON * 2.0);
-                            addExposedFaceOutlines(tessellator, bb, exposedFaces);
-                        }
+                for (int i = 0; i < cache.outlineCount && rendered < MAX_RENDER_BLOCKS; ++i) {
+                    int index = cache.outlineIndices[i];
+                    int x = index % width;
+                    int yz = index / width;
+                    int y = yz / length;
+                    int z = yz % length;
+                    Block block = schematic.getBlock(x, y, z);
+                    if (block == null || block.blockID == 0) {
+                        continue;
                     }
+                    ++rendered;
+
+                    int exposedFaces = getExposedFaces(schematic, x, y, z, width, height, length);
+                    if (exposedFaces == 0) {
+                        continue;
+                    }
+                    int worldX = originX + x;
+                    int worldY = originY + y;
+                    int worldZ = originZ + z;
+                    boolean markerMatch = markerActive
+                            && worldX == markerX
+                            && worldY == markerY
+                            && worldZ == markerZ;
+                    if (markerMatch) {
+                        markerDrawnFromProjection = true;
+                        tessellator.setColorRGBA_F(1.0F, 0.2F, 0.2F, lineAlpha);
+                    } else {
+                        tessellator.setColorRGBA_F(0.15F, 0.85F, 1.0F, lineAlpha);
+                    }
+
+                    double minX = worldX - camX - BOX_EPSILON;
+                    double minY = worldY - camY - BOX_EPSILON;
+                    double minZ = worldZ - camZ - BOX_EPSILON;
+                    AxisAlignedBB bb = AxisAlignedBB.getBoundingBox(
+                            minX, minY, minZ,
+                            minX + 1.0 + BOX_EPSILON * 2.0,
+                            minY + 1.0 + BOX_EPSILON * 2.0,
+                            minZ + 1.0 + BOX_EPSILON * 2.0);
+                    addExposedFaceOutlines(tessellator, bb, exposedFaces);
                 }
                 tessellator.draw();
             }
@@ -220,6 +232,8 @@ public final class SchematicProjectionRenderer {
             Tessellator tessellator,
             RenderBlocks renderBlocks,
             ISchematic schematic,
+            int[] indices,
+            int indexCount,
             int originX,
             int originY,
             int originZ,
@@ -238,41 +252,115 @@ public final class SchematicProjectionRenderer {
         GL11.glColor4f(1.0F, 1.0F, 1.0F, alpha);
 
         int rendered = 0;
-        outer:
-        for (int x = 0; x < width; ++x) {
-            for (int y = 0; y < height; ++y) {
-                for (int z = 0; z < length; ++z) {
-                    Block block = schematic.getBlock(x, y, z);
-                    if (block == null || block.blockID == 0 || block.getRenderBlockPass() != renderPass) {
-                        continue;
-                    }
-                    if (block.getRenderType() == 33) {
-                        continue;
-                    }
-                    if (++rendered > MAX_RENDER_BLOCKS) {
-                        break outer;
-                    }
-                    int exposedFaces = getExposedFaces(schematic, x, y, z, width, height, length);
-                    if (exposedFaces == 0) {
-                        continue;
-                    }
-
-                    int worldX = originX + x;
-                    int worldY = originY + y;
-                    int worldZ = originZ + z;
-                    if (block.getRenderType() == 22) {
-                        if (renderPass == 0 && chestEntries != null) {
-                            chestEntries.add(new ChestRenderEntry(block, schematic.getBlockMetadata(x, y, z), worldX, worldY, worldZ));
-                        }
-                        continue;
-                    }
-                    renderBlocks.renderBlockByRenderType(block, worldX, worldY, worldZ);
-                }
+        for (int i = 0; i < indexCount && rendered < MAX_RENDER_BLOCKS; ++i) {
+            int index = indices[i];
+            int x = index % width;
+            int yz = index / width;
+            int y = yz / length;
+            int z = yz % length;
+            Block block = schematic.getBlock(x, y, z);
+            if (block == null || block.blockID == 0 || block.getRenderBlockPass() != renderPass) {
+                continue;
             }
+            if (block.getRenderType() == 33) {
+                continue;
+            }
+            ++rendered;
+            int exposedFaces = getExposedFaces(schematic, x, y, z, width, height, length);
+            if (exposedFaces == 0) {
+                continue;
+            }
+
+            int worldX = originX + x;
+            int worldY = originY + y;
+            int worldZ = originZ + z;
+            if (block.getRenderType() == 22) {
+                if (renderPass == 0 && chestEntries != null) {
+                    chestEntries.add(new ChestRenderEntry(block, schematic.getBlockMetadata(x, y, z), worldX, worldY, worldZ));
+                }
+                continue;
+            }
+            renderBlocks.renderBlockByRenderType(block, worldX, worldY, worldZ);
         }
 
         tessellator.draw();
         tessellator.setTranslation(0.0, 0.0, 0.0);
+    }
+
+    private static ProjectionRenderCache getOrBuildProjectionCache(
+            ISchematic schematic,
+            int originX,
+            int originY,
+            int originZ,
+            int width,
+            int height,
+            int length) {
+        ProjectionRenderCache cache = projectionCache;
+        if (cache != null
+                && cache.matches(schematic, originX, originY, originZ, width, height, length)) {
+            return cache;
+        }
+
+        ProjectionRenderCache rebuilt = new ProjectionRenderCache(schematic, originX, originY, originZ, width, height, length);
+        for (int x = 0; x < width; ++x) {
+            for (int y = 0; y < height; ++y) {
+                for (int z = 0; z < length; ++z) {
+                    Block block = schematic.getBlock(x, y, z);
+                    if (block == null || block.blockID == 0) {
+                        continue;
+                    }
+                    int index = x + (y * length + z) * width;
+                    rebuilt.appendOutline(index);
+                    int renderType = block.getRenderType();
+                    if (renderType == 22) {
+                        rebuilt.appendChest(index, schematic.getBlockMetadata(x, y, z));
+                        continue;
+                    }
+                    if (renderType == 33) {
+                        continue;
+                    }
+                    if (block.getRenderBlockPass() == 0) {
+                        rebuilt.appendPass0(index);
+                    } else {
+                        rebuilt.appendPass1(index);
+                    }
+                }
+            }
+        }
+        projectionCache = rebuilt;
+        return rebuilt;
+    }
+
+    private static void collectChestEntries(
+            List<ChestRenderEntry> out,
+            ProjectionRenderCache cache,
+            ISchematic schematic,
+            int originX,
+            int originY,
+            int originZ,
+            int width,
+            int length) {
+        if (out == null || cache == null || cache.chestCount <= 0) {
+            return;
+        }
+        int limit = Math.min(cache.chestCount, MAX_RENDER_BLOCKS);
+        for (int i = 0; i < limit; ++i) {
+            int index = cache.chestIndices[i];
+            int x = index % width;
+            int yz = index / width;
+            int y = yz / length;
+            int z = yz % length;
+            Block block = schematic.getBlock(x, y, z);
+            if (block == null || block.blockID == 0 || block.getRenderType() != 22) {
+                continue;
+            }
+            out.add(new ChestRenderEntry(
+                    block,
+                    cache.chestMetadata[i] & 0xF,
+                    originX + x,
+                    originY + y,
+                    originZ + z));
+        }
     }
 
     private static void renderGhostChests(
@@ -410,6 +498,95 @@ public final class SchematicProjectionRenderer {
             this.worldX = worldX;
             this.worldY = worldY;
             this.worldZ = worldZ;
+        }
+    }
+
+    private static final class ProjectionRenderCache {
+        private final ISchematic schematic;
+        private final int originX;
+        private final int originY;
+        private final int originZ;
+        private final int width;
+        private final int height;
+        private final int length;
+        private int[] pass0Indices = new int[256];
+        private int pass0Count;
+        private int[] pass1Indices = new int[256];
+        private int pass1Count;
+        private int[] outlineIndices = new int[256];
+        private int outlineCount;
+        private int[] chestIndices = new int[64];
+        private byte[] chestMetadata = new byte[64];
+        private int chestCount;
+
+        private ProjectionRenderCache(
+                ISchematic schematic,
+                int originX,
+                int originY,
+                int originZ,
+                int width,
+                int height,
+                int length) {
+            this.schematic = schematic;
+            this.originX = originX;
+            this.originY = originY;
+            this.originZ = originZ;
+            this.width = width;
+            this.height = height;
+            this.length = length;
+        }
+
+        private boolean matches(ISchematic schematic, int originX, int originY, int originZ, int width, int height, int length) {
+            return this.schematic == schematic
+                    && this.originX == originX
+                    && this.originY == originY
+                    && this.originZ == originZ
+                    && this.width == width
+                    && this.height == height
+                    && this.length == length;
+        }
+
+        private void appendPass0(int index) {
+            this.pass0Indices = ensureCapacity(this.pass0Indices, this.pass0Count + 1);
+            this.pass0Indices[this.pass0Count++] = index;
+        }
+
+        private void appendPass1(int index) {
+            this.pass1Indices = ensureCapacity(this.pass1Indices, this.pass1Count + 1);
+            this.pass1Indices[this.pass1Count++] = index;
+        }
+
+        private void appendOutline(int index) {
+            this.outlineIndices = ensureCapacity(this.outlineIndices, this.outlineCount + 1);
+            this.outlineIndices[this.outlineCount++] = index;
+        }
+
+        private void appendChest(int index, int metadata) {
+            this.chestIndices = ensureCapacity(this.chestIndices, this.chestCount + 1);
+            this.chestMetadata = ensureCapacity(this.chestMetadata, this.chestCount + 1);
+            this.chestIndices[this.chestCount] = index;
+            this.chestMetadata[this.chestCount] = (byte) (metadata & 0xF);
+            ++this.chestCount;
+        }
+
+        private static int[] ensureCapacity(int[] source, int minSize) {
+            if (source.length >= minSize) {
+                return source;
+            }
+            int newSize = Math.max(source.length * 2, minSize);
+            int[] expanded = new int[newSize];
+            System.arraycopy(source, 0, expanded, 0, source.length);
+            return expanded;
+        }
+
+        private static byte[] ensureCapacity(byte[] source, int minSize) {
+            if (source.length >= minSize) {
+                return source;
+            }
+            int newSize = Math.max(source.length * 2, minSize);
+            byte[] expanded = new byte[newSize];
+            System.arraycopy(source, 0, expanded, 0, source.length);
+            return expanded;
         }
     }
 

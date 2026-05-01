@@ -17,12 +17,18 @@ import net.minecraft.NBTTagCompound;
 public abstract class SchematicFormat {
     public static final Map<String, SchematicFormat> FORMATS = new HashMap<String, SchematicFormat>();
     public static String FORMAT_DEFAULT;
+    private static volatile String lastReadError;
 
     public abstract ISchematic readFromNBT(NBTTagCompound var1);
 
     public abstract boolean writeToNBT(NBTTagCompound var1, ISchematic var2);
 
     public static ISchematic readFromFile(File file) {
+        setLastReadError(null);
+        if (file == null) {
+            setLastReadError("input file is null");
+            return null;
+        }
         try {
             NBTTagCompound tagCompound = SchematicUtil.readTagCompoundFromFile(file);
             String format = tagCompound.getString("Materials");
@@ -30,12 +36,32 @@ public abstract class SchematicFormat {
             if (schematicFormat == null) {
                 throw new UnsupportedFormatException(format);
             }
-            return schematicFormat.readFromNBT(tagCompound);
+            ISchematic schematic = schematicFormat.readFromNBT(tagCompound);
+            if (schematic == null && lastReadError == null) {
+                setLastReadError("decoder returned null");
+            }
+            return schematic;
         }
         catch (Exception ex) {
+            setLastReadError("exception: " + ex.getClass().getSimpleName() + (ex.getMessage() == null ? "" : " - " + ex.getMessage()));
             Reference.logger.error("Failed to read schematic!", (Throwable)ex);
             return null;
         }
+    }
+
+    static void setLastReadError(String reason) {
+        if (reason == null) {
+            lastReadError = null;
+            return;
+        }
+        String trimmed = reason.trim();
+        lastReadError = trimmed.isEmpty() ? null : trimmed;
+    }
+
+    public static String consumeLastReadError() {
+        String value = lastReadError;
+        lastReadError = null;
+        return value;
     }
 
     public static ISchematic readFromFile(File directory, String filename) {
