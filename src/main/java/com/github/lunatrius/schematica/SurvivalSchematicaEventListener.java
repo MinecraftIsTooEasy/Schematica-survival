@@ -16,6 +16,7 @@ import moddedmite.rustedironcore.network.Network;
 import net.minecraft.Block;
 import net.minecraft.EntityItem;
 import net.minecraft.EntityPlayer;
+import net.minecraft.EnumDirection;
 import net.minecraft.IInventory;
 import net.minecraft.InventoryPlayer;
 import net.minecraft.Item;
@@ -38,6 +39,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.WeakHashMap;
 
 public class SurvivalSchematicaEventListener implements ITickListener {
@@ -51,6 +53,10 @@ public class SurvivalSchematicaEventListener implements ITickListener {
     private static long PRINTER_TXN_SEQ = 0L;
     private static final Map<ISchematic, NonAirIndexCache> NON_AIR_INDEX_CACHE = new WeakHashMap<ISchematic, NonAirIndexCache>();
     private static final Map<String, ScheduledPrinterPrintTask> ACTIVE_PRINTER_PRINT_TASKS = new HashMap<String, ScheduledPrinterPrintTask>();
+    private static final ConcurrentHashMap<Integer, Integer> ROTATION_META_RESULT_CACHE = new ConcurrentHashMap<Integer, Integer>();
+    private static final List<RotationMetaRule> ROTATION_META_RULES = createRotationMetaRules();
+    @Deprecated
+    private static final List<RotationMetaFallbackHandler> ROTATION_META_FALLBACK_HANDLERS = createRotationMetaFallbackHandlers();
 
     @Override
     public void onServerTick(MinecraftServer server) {
@@ -616,7 +622,7 @@ public class SurvivalSchematicaEventListener implements ITickListener {
             event.setExecuteSuccess(true);
             event.getPlayer().addChatMessage(I18n.tr(
                     "schematica.command.printer.usage",
-                    "Usage: /schematica printer <print|undo|provide|health|sync> ..."));
+                    "Usage: /schematica printer <print|undo|provide|providefood|health|sync> ..."));
             return;
         }
 
@@ -651,6 +657,16 @@ public class SurvivalSchematicaEventListener implements ITickListener {
             return;
         }
 
+        if ("providefood".equals(action)) {
+            if (clientWorld) {
+                event.setExecuteSuccess(false);
+                return;
+            }
+            event.setExecuteSuccess(true);
+            handlePrinterProvideFood(event, parts, true);
+            return;
+        }
+
         if ("health".equals(action)) {
             if (clientWorld) {
                 event.setExecuteSuccess(false);
@@ -674,7 +690,7 @@ public class SurvivalSchematicaEventListener implements ITickListener {
         event.setExecuteSuccess(true);
         event.getPlayer().addChatMessage(I18n.tr(
                 "schematica.command.printer.usage",
-                "Usage: /schematica printer <print|undo|provide|health|sync> ..."));
+                "Usage: /schematica printer <print|undo|provide|providefood|health|sync> ..."));
     }
 
     private void handlePrinterPrint(HandleChatCommandEvent event, String[] parts) {
@@ -1199,6 +1215,93 @@ public class SurvivalSchematicaEventListener implements ITickListener {
         return true;
     }
 
+    private boolean handlePrinterProvideFood(HandleChatCommandEvent event, String[] parts, boolean sendFeedback) {
+        if (parts.length < 6) {
+            if (sendFeedback) {
+                event.getPlayer().addChatMessage(I18n.tr(
+                        "schematica.command.printer.provide_food.usage",
+                        "Usage: /schematica printer providefood <x> <y> <z> [hungerTarget]"));
+            }
+            return false;
+        }
+
+        int printerX;
+        int printerY;
+        int printerZ;
+        int hungerTarget = Integer.MAX_VALUE;
+        String txnId = null;
+        try {
+            printerX = Integer.parseInt(parts[3]);
+            printerY = Integer.parseInt(parts[4]);
+            printerZ = Integer.parseInt(parts[5]);
+            if (parts.length >= 7) {
+                hungerTarget = Integer.parseInt(parts[6]);
+            }
+        } catch (NumberFormatException e) {
+            if (sendFeedback) {
+                event.getPlayer().addChatMessage(I18n.tr(
+                        "schematica.command.printer.provide_food.usage",
+                        "Usage: /schematica printer providefood <x> <y> <z> [hungerTarget]"));
+            }
+            return false;
+        }
+        if (hungerTarget <= 0) {
+            hungerTarget = Integer.MAX_VALUE;
+        }
+        if (sendFeedback) {
+            txnId = newPrinterTxnId("providefood");
+            logPrinterTxn(event, txnId, "START", String.format(Locale.ROOT,
+                    "printer=[%d,%d,%d], hungerTarget=%d",
+                    printerX, printerY, printerZ, hungerTarget));
+        }
+
+        World world = event.getWorld();
+        EntityPlayer player = event.getPlayer();
+        if (world == null || player == null || player.inventory == null) {
+            if (sendFeedback) {
+                event.getPlayer().addChatMessage(I18n.tr(
+                        "schematica.command.printer.provide.internal",
+                        "Printer provide failed (missing world/player/inventory)."));
+                logPrinterTxn(event, txnId, "FAIL", "missing_world_or_player_inventory");
+            }
+            return true;
+        }
+
+        IInventory printerInventory = getPrinterInventory(world, printerX, printerY, printerZ);
+        if (printerInventory == null) {
+            if (sendFeedback) {
+                event.getPlayer().addChatMessage(I18n.trf(
+                        "schematica.command.printer.not_found",
+                        "Printer not found at [%d,%d,%d].",
+                        printerX, printerY, printerZ));
+                logPrinterTxn(event, txnId, "FAIL", "printer_not_found");
+            }
+            return true;
+        }
+
+        FoodTransferResult moved = transferFoodFromPlayerToPrinter(player, printerInventory, hungerTarget);
+        if (moved.movedCount > 0) {
+            syncPrinterInventoryToClients(world, printerX, printerY, printerZ, printerInventory);
+        }
+        if (sendFeedback) {
+            if (moved.movedCount <= 0) {
+                event.getPlayer().addChatMessage(I18n.tr(
+                        "schematica.command.printer.provide.none",
+                        "No matching items were moved."));
+                logPrinterTxn(event, txnId, "OK", "moved=0");
+            } else {
+                event.getPlayer().addChatMessage(I18n.trf(
+                        "schematica.command.printer.provide_food.done",
+                        "Provided food to printer [%d,%d,%d]: items=%d, hunger=%d",
+                        printerX, printerY, printerZ, moved.movedCount, moved.movedHunger));
+                logPrinterTxn(event, txnId, "OK", String.format(Locale.ROOT,
+                        "movedCount=%d, movedHunger=%d",
+                        moved.movedCount, moved.movedHunger));
+            }
+        }
+        return true;
+    }
+
     private void handlePrinterHealth(HandleChatCommandEvent event, String[] parts) {
         if (parts.length < 6) {
             event.getPlayer().addChatMessage(I18n.tr(
@@ -1397,6 +1500,44 @@ public class SurvivalSchematicaEventListener implements ITickListener {
             printerInventory.onInventoryChanged();
         }
         return moved;
+    }
+
+    private FoodTransferResult transferFoodFromPlayerToPrinter(EntityPlayer player, IInventory printerInventory, int hungerTarget) {
+        FoodTransferResult result = new FoodTransferResult();
+        if (player == null || player.inventory == null || printerInventory == null || hungerTarget <= 0) {
+            return result;
+        }
+        int remaining = hungerTarget;
+        for (int slot = 0; slot < player.inventory.mainInventory.length && remaining > 0; ++slot) {
+            ItemStack source = player.inventory.mainInventory[slot];
+            if (source == null || source.stackSize <= 0 || source.itemID <= 0) {
+                continue;
+            }
+            int valuePerItem = getFoodHungerValuePerItem(source);
+            if (valuePerItem <= 0) {
+                continue;
+            }
+            int needCount = (remaining + valuePerItem - 1) / valuePerItem;
+            int request = Math.min(source.stackSize, Math.max(1, needCount));
+            int inserted = insertIntoInventory(printerInventory, source, request);
+            if (inserted <= 0) {
+                continue;
+            }
+            source.stackSize -= inserted;
+            if (source.stackSize <= 0) {
+                player.inventory.setInventorySlotContents(slot, null);
+            } else {
+                player.inventory.inventorySlotChangedOnServer(slot);
+            }
+            result.movedCount += inserted;
+            result.movedHunger += inserted * valuePerItem;
+            remaining -= inserted * valuePerItem;
+        }
+        if (result.movedCount > 0) {
+            player.inventory.onInventoryChanged();
+            printerInventory.onInventoryChanged();
+        }
+        return result;
     }
 
     private int insertIntoInventory(IInventory inventory, ItemStack schematica_survival, int amount) {
@@ -1970,6 +2111,40 @@ public class SurvivalSchematicaEventListener implements ITickListener {
             }
         }
 
+        int baseFoodHunger = 0;
+        for (int i = 0; i < cache.count; ++i) {
+            int index = cache.indices[i];
+            int x = index % width;
+            int yz = index / width;
+            int y = yz / length;
+            int z = yz % length;
+            Block block = schematic.getBlock(x, y, z);
+            if (block == null || block.blockID == 0) {
+                continue;
+            }
+            int metadata = schematic.getBlockMetadata(x, y, z);
+            int wx = originX + x;
+            int wy = originY + y;
+            int wz = originZ + z;
+            int existingId;
+            int existingMeta;
+            if (existingPacked != null && i < existingPacked.length) {
+                int packed = existingPacked[i];
+                existingId = unpackExistingId(packed);
+                existingMeta = unpackExistingMeta(packed);
+            } else {
+                existingId = world.getBlockId(wx, wy, wz);
+                existingMeta = world.getBlockMetadata(wx, wy, wz);
+            }
+            if (!needsMaterialForPlacement(existingId, existingMeta, block.blockID, metadata, mode)) {
+                continue;
+            }
+            float hardness = Math.min(block.getBlockHardness(0), 20.0F);
+            baseFoodHunger += (int) Math.floor(Math.max(0.0F, hardness));
+        }
+        int requiredFoodHunger = SchematicaPrinterConfig.computeRequiredFoodHunger(baseFoodHunger);
+        result.requiredFoodHunger = requiredFoodHunger;
+
         result.materialTypes = required.size();
 
         Map<MaterialKey, Integer> available = collectInventoryMaterials(inventory);
@@ -1991,6 +2166,15 @@ public class SurvivalSchematicaEventListener implements ITickListener {
             result.shortages.add(new MaterialShortage(
                     I18n.trf("schematica.command.paste.shortage.no_item", "%s (no carryable item)", unsupportedEntry.getKey()),
                     unsupportedEntry.getValue()));
+        }
+
+        if (requiredFoodHunger > 0) {
+            int availableFoodHunger = collectFoodHungerInInventory(inventory);
+            if (availableFoodHunger < requiredFoodHunger) {
+                result.shortages.add(new MaterialShortage(
+                        I18n.tr("schematica.command.printer.food_label", "Food"),
+                        requiredFoodHunger - availableFoodHunger));
+            }
         }
 
         if (!result.shortages.isEmpty()) {
@@ -2022,6 +2206,31 @@ public class SurvivalSchematicaEventListener implements ITickListener {
                 return result;
             }
             mergeCount(result.consumedByType, entry.getKey(), entry.getValue());
+        }
+
+        if (requiredFoodHunger > 0) {
+            int consumedFoodHunger = consumeFoodByHungerRequirement(inventory, requiredFoodHunger, result.consumedByType);
+            if (consumedFoodHunger < 0) {
+                int consumedBeforeFailure = sumMaterialCounts(result.consumedByType);
+                int restored = restoreMaterialsToInventory(inventory, result.consumedByType);
+                int notRestored = Math.max(0, consumedBeforeFailure - restored);
+                result.consumedByType.clear();
+                result.canPaste = false;
+                result.shortages.add(new MaterialShortage(
+                        I18n.tr("schematica.command.paste.shortage.inventory_changed", "Inventory changed while consuming materials."),
+                        requiredFoodHunger));
+                if (notRestored > 0) {
+                    result.shortages.add(new MaterialShortage(
+                            I18n.trf(
+                                    "schematica.command.paste.shortage.rollback_incomplete",
+                                    "Rollback incomplete: restored %d/%d consumed items.",
+                                    restored,
+                                    consumedBeforeFailure),
+                            notRestored));
+                }
+                return result;
+            }
+            result.totalConsumed += consumedFoodHunger;
         }
 
         return result;
@@ -2085,6 +2294,116 @@ public class SurvivalSchematicaEventListener implements ITickListener {
             mergeCount(counts, key, stack.stackSize);
         }
         return counts;
+    }
+
+    private int collectFoodHungerInInventory(IInventory inventory) {
+        if (inventory == null) {
+            return 0;
+        }
+        int total = 0;
+        for (int slot = 0; slot < inventory.getSizeInventory(); ++slot) {
+            ItemStack stack = inventory.getStackInSlot(slot);
+            if (stack == null || stack.stackSize <= 0 || stack.itemID <= 0) {
+                continue;
+            }
+            int value = getFoodHungerValuePerItem(stack);
+            if (value <= 0) {
+                continue;
+            }
+            total += value * stack.stackSize;
+        }
+        return total;
+    }
+
+    private int getFoodHungerValuePerItem(ItemStack stack) {
+        if (stack == null || stack.itemID <= 0 || stack.itemID >= Item.itemsList.length) {
+            return 0;
+        }
+        Item item = Item.itemsList[stack.itemID];
+        if (item == null) {
+            return 0;
+        }
+        int satiation = Math.max(0, item.getSatiation(null));
+        int nutrition = Math.max(0, item.getNutrition());
+        return satiation + nutrition;
+    }
+
+    private int consumeFoodByHungerRequirement(IInventory inventory, int requiredFoodHunger, Map<MaterialKey, Integer> consumedByType) {
+        if (inventory == null || requiredFoodHunger <= 0) {
+            return 0;
+        }
+        List<FoodUnit> units = new ArrayList<FoodUnit>();
+        int totalFoodHunger = 0;
+        for (int slot = 0; slot < inventory.getSizeInventory(); ++slot) {
+            ItemStack stack = inventory.getStackInSlot(slot);
+            if (stack == null || stack.stackSize <= 0 || stack.itemID <= 0) {
+                continue;
+            }
+            int value = getFoodHungerValuePerItem(stack);
+            if (value <= 0) {
+                continue;
+            }
+            MaterialKey key = new MaterialKey(stack.itemID, stack.getItemSubtype());
+            for (int i = 0; i < stack.stackSize; ++i) {
+                units.add(new FoodUnit(value, key));
+            }
+            totalFoodHunger += value * stack.stackSize;
+        }
+        if (totalFoodHunger < requiredFoodHunger) {
+            return -1;
+        }
+        Collections.sort(units, new Comparator<FoodUnit>() {
+            @Override
+            public int compare(FoodUnit a, FoodUnit b) {
+                return a.value - b.value;
+            }
+        });
+
+        int remaining = requiredFoodHunger;
+        List<FoodUnit> selected = new ArrayList<FoodUnit>();
+        for (FoodUnit unit : units) {
+            selected.add(unit);
+            remaining -= unit.value;
+            if (remaining <= 0) {
+                break;
+            }
+        }
+        int selectedTotal = 0;
+        for (FoodUnit unit : selected) {
+            selectedTotal += unit.value;
+        }
+        int overflow = selectedTotal - requiredFoodHunger;
+        if (overflow > 0) {
+            Collections.sort(selected, new Comparator<FoodUnit>() {
+                @Override
+                public int compare(FoodUnit a, FoodUnit b) {
+                    return b.value - a.value;
+                }
+            });
+            for (int i = 0; i < selected.size(); ++i) {
+                FoodUnit unit = selected.get(i);
+                if (unit.value <= overflow) {
+                    overflow -= unit.value;
+                    selected.remove(i);
+                    --i;
+                }
+            }
+        }
+
+        Map<MaterialKey, Integer> consumeCounts = new HashMap<MaterialKey, Integer>();
+        for (FoodUnit unit : selected) {
+            mergeCount(consumeCounts, unit.key, 1);
+        }
+        int consumedHunger = 0;
+        for (Map.Entry<MaterialKey, Integer> entry : consumeCounts.entrySet()) {
+            if (!consumeFromInventory(inventory, entry.getKey(), entry.getValue())) {
+                return -1;
+            }
+            mergeCount(consumedByType, entry.getKey(), entry.getValue());
+            ItemStack probe = new ItemStack(Item.itemsList[entry.getKey().itemId], 1, entry.getKey().subtype);
+            consumedHunger += getFoodHungerValuePerItem(probe) * entry.getValue();
+        }
+        return consumedHunger;
     }
 
     private boolean consumeFromInventory(IInventory inventory, MaterialKey key, int amount) {
@@ -2262,6 +2581,7 @@ public class SurvivalSchematicaEventListener implements ITickListener {
     }
 
     private ISchematic rotateSchematic(ISchematic source, int angle) {
+        ROTATION_META_RESULT_CACHE.clear();
         int newWidth = angle == 180 ? source.getWidth() : source.getLength();
         int newLength = angle == 180 ? source.getLength() : source.getWidth();
         Schematic rotated = new Schematic(copyIcon(source), newWidth, source.getHeight(), newLength);
@@ -2288,36 +2608,517 @@ public class SurvivalSchematicaEventListener implements ITickListener {
                 }
             }
         }
+        ROTATION_META_RESULT_CACHE.clear();
         return rotated;
     }
 
     private int adjustMetadataForRotation(Block block, int metadata, int angle) {
-        if (block == null || !isStairBlock(block)) {
+        if (block == null) {
             return metadata;
         }
-        return rotateStairMetadataCounterClockwise(metadata, angle);
-    }
-
-    private boolean isStairBlock(Block block) {
-        String className = block.getClass().getSimpleName();
-        return className != null && className.toLowerCase(Locale.ROOT).contains("stair");
-    }
-
-    private int rotateStairMetadataCounterClockwise(int metadata, int angle) {
-        int upsideDownBit = metadata & 0x4;
-        int facingBits = metadata & 0x3;
-        int rotatedFacing;
-        if (angle == 180) {
-            rotatedFacing = rotateStairFacing180(facingBits);
-        } else if (angle == 90) {
-            rotatedFacing = rotateStairFacingClockwise(facingBits);
-        } else {
-            rotatedFacing = rotateStairFacingCounterClockwise(facingBits);
+        if (!SchematicaPrinterConfig.isPrinterRotationUseBlockFacingApiEnabled()) {
+            return metadata;
         }
-        return upsideDownBit | rotatedFacing;
+        boolean inverseRotation = false;
+        int cacheKey = toRotationMetaCacheKey(block.blockID, metadata, angle, inverseRotation);
+        Integer cached = ROTATION_META_RESULT_CACHE.get(cacheKey);
+        if (cached != null) {
+            return cached.intValue();
+        }
+        Integer rotated = tryRotateMetadataByRuleSet(block, metadata, angle, inverseRotation);
+        if (rotated == null) {
+            rotated = tryRotateMetadataByBlockFacingApi(block, metadata, angle, inverseRotation);
+        }
+        int result = rotated == null ? metadata : rotated.intValue();
+        ROTATION_META_RESULT_CACHE.put(cacheKey, Integer.valueOf(result));
+        return result;
     }
 
-    private int rotateStairFacingClockwise(int facingBits) {
+    private int toRotationMetaCacheKey(int blockId, int metadata, int angle, boolean inverseRotation) {
+        int meta4 = metadata & 0xF;
+        int angleBits = (angle / 90) & 0x3;
+        int inverseBit = inverseRotation ? 1 : 0;
+        return ((blockId & 0x3FF) << 8) | (meta4 << 4) | (angleBits << 1) | inverseBit;
+    }
+
+    private Integer tryRotateMetadataByBlockFacingApi(Block block, int metadata, int angle, boolean inverseRotation) {
+        try {
+            EnumDirection facing = block.getDirectionFacing(metadata);
+            if (facing == null || !isHorizontalFacing(facing)) {
+                return null;
+            }
+            EnumDirection rotatedFacing = rotateHorizontalDirection(facing, angle, inverseRotation);
+            int rotatedMeta = block.getMetadataForDirectionFacing(metadata, rotatedFacing);
+            return Integer.valueOf(rotatedMeta);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private boolean isHorizontalFacing(EnumDirection direction) {
+        return direction == EnumDirection.NORTH
+                || direction == EnumDirection.SOUTH
+                || direction == EnumDirection.WEST
+                || direction == EnumDirection.EAST;
+    }
+
+    private EnumDirection rotateHorizontalDirection(EnumDirection direction, int angle, boolean inverseRotation) {
+        if (angle == 180) {
+            return rotateHorizontalDirection180(direction);
+        }
+        boolean clockwise = angle == 90;
+        if (inverseRotation) {
+            clockwise = !clockwise;
+        }
+        return clockwise ? rotateHorizontalDirectionClockwise(direction) : rotateHorizontalDirectionCounterClockwise(direction);
+    }
+
+    private EnumDirection rotateHorizontalDirectionClockwise(EnumDirection direction) {
+        if (direction == EnumDirection.NORTH) return EnumDirection.EAST;
+        if (direction == EnumDirection.EAST) return EnumDirection.SOUTH;
+        if (direction == EnumDirection.SOUTH) return EnumDirection.WEST;
+        if (direction == EnumDirection.WEST) return EnumDirection.NORTH;
+        return direction;
+    }
+
+    private EnumDirection rotateHorizontalDirectionCounterClockwise(EnumDirection direction) {
+        if (direction == EnumDirection.NORTH) return EnumDirection.WEST;
+        if (direction == EnumDirection.WEST) return EnumDirection.SOUTH;
+        if (direction == EnumDirection.SOUTH) return EnumDirection.EAST;
+        if (direction == EnumDirection.EAST) return EnumDirection.NORTH;
+        return direction;
+    }
+
+    private EnumDirection rotateHorizontalDirection180(EnumDirection direction) {
+        if (direction == EnumDirection.NORTH) return EnumDirection.SOUTH;
+        if (direction == EnumDirection.SOUTH) return EnumDirection.NORTH;
+        if (direction == EnumDirection.WEST) return EnumDirection.EAST;
+        if (direction == EnumDirection.EAST) return EnumDirection.WEST;
+        return direction;
+    }
+
+    private Integer tryWallAttachmentFallback(Block block, int metadata, int angle, boolean inverseRotation) {
+        if (block == null) {
+            return null;
+        }
+        if (block.blockID == 65) {
+            return rotateLadderMetadata(metadata, angle, inverseRotation);
+        }
+        if (block.blockID == 106) {
+            return rotateVineMetadata(metadata, angle, inverseRotation);
+        }
+        return null;
+    }
+
+    private Integer rotateLadderMetadata(int metadata, int angle, boolean inverseRotation) {
+        int mount = metadata & 0x7; // 2..5
+        int rotated = mount;
+        if (angle == 180) {
+            rotated = mount == 2 ? 3 : mount == 3 ? 2 : mount == 4 ? 5 : mount == 5 ? 4 : mount;
+        } else {
+            boolean clockwise = angle == 90;
+            if (inverseRotation) {
+                clockwise = !clockwise;
+            }
+            if (clockwise) {
+                rotated = mount == 2 ? 5 : mount == 5 ? 3 : mount == 3 ? 4 : mount == 4 ? 2 : mount;
+            } else {
+                rotated = mount == 2 ? 4 : mount == 4 ? 3 : mount == 3 ? 5 : mount == 5 ? 2 : mount;
+            }
+        }
+        return Integer.valueOf((metadata & ~0x7) | (rotated & 0x7));
+    }
+
+    private Integer rotateVineMetadata(int metadata, int angle, boolean inverseRotation) {
+        int mask = metadata & 0xF; // 1=south,2=west,4=north,8=east
+        int rotated;
+        if (angle == 180) {
+            rotated = rotateVineMask90(rotateVineMask90(mask));
+        } else {
+            boolean clockwise = angle == 90;
+            if (inverseRotation) {
+                clockwise = !clockwise;
+            }
+            rotated = clockwise ? rotateVineMask90(mask) : rotateVineMask270(mask);
+        }
+        return Integer.valueOf((metadata & ~0xF) | (rotated & 0xF));
+    }
+
+    private int rotateVineMask90(int mask) {
+        int out = 0;
+        if ((mask & 0x1) != 0) out |= 0x2;
+        if ((mask & 0x2) != 0) out |= 0x4;
+        if ((mask & 0x4) != 0) out |= 0x8;
+        if ((mask & 0x8) != 0) out |= 0x1;
+        return out;
+    }
+
+    private int rotateVineMask270(int mask) {
+        int out = 0;
+        if ((mask & 0x1) != 0) out |= 0x8;
+        if ((mask & 0x8) != 0) out |= 0x4;
+        if ((mask & 0x4) != 0) out |= 0x2;
+        if ((mask & 0x2) != 0) out |= 0x1;
+        return out;
+    }
+
+    private Integer tryRotateMetadataByRuleSet(Block block, int metadata, int angle, boolean inverseRotation) {
+        for (RotationMetaRule rule : ROTATION_META_RULES) {
+            if (rule == null || !rule.matches(block, metadata)) {
+                continue;
+            }
+            Integer rotated = rule.rotate(metadata, angle, inverseRotation);
+            if (rotated != null) {
+                return rotated;
+            }
+        }
+        return null;
+    }
+
+    private static List<RotationMetaRule> createRotationMetaRules() {
+        List<RotationMetaRule> rules = new ArrayList<RotationMetaRule>();
+        rules.add(new StairRotationRule());
+        rules.add(new Cardinal2To5RotationRule());
+        rules.add(new Horizontal0To3RotationRule());
+        rules.add(new LadderRotationRule());
+        rules.add(new TorchRotationRule());
+        rules.add(new VineRotationRule());
+        return Collections.unmodifiableList(rules);
+    }
+
+    private interface RotationMetaRule {
+        boolean matches(Block block, int metadata);
+
+        Integer rotate(int metadata, int angle, boolean inverseRotation);
+    }
+
+    private static abstract class HorizontalMountRule implements RotationMetaRule {
+        protected int rotateByQuarterTurns(int value, int angle, boolean inverseRotation) {
+            if (angle == 180) {
+                return rotate180(value);
+            }
+            boolean clockwise = angle == 90;
+            if (inverseRotation) {
+                clockwise = !clockwise;
+            }
+            return clockwise ? rotateClockwise(value) : rotateCounterClockwise(value);
+        }
+
+        protected abstract int rotateClockwise(int value);
+
+        protected abstract int rotateCounterClockwise(int value);
+
+        protected abstract int rotate180(int value);
+    }
+
+    private static final class StairRotationRule extends HorizontalMountRule {
+        @Override
+        public boolean matches(Block block, int metadata) {
+            if (block == null) {
+                return false;
+            }
+            String className = block.getClass().getSimpleName();
+            return className != null && className.toLowerCase(Locale.ROOT).contains("stair");
+        }
+
+        @Override
+        public Integer rotate(int metadata, int angle, boolean inverseRotation) {
+            int topBit = metadata & 0x4;
+            int facing = metadata & 0x3;
+            int rotatedFacing = rotateByQuarterTurns(facing, angle, inverseRotation);
+            return Integer.valueOf(topBit | (rotatedFacing & 0x3));
+        }
+
+        @Override
+        protected int rotateClockwise(int value) {
+            return value == 0 ? 2 : value == 1 ? 3 : value == 2 ? 1 : 0;
+        }
+
+        @Override
+        protected int rotateCounterClockwise(int value) {
+            return value == 0 ? 3 : value == 1 ? 2 : value == 2 ? 0 : 1;
+        }
+
+        @Override
+        protected int rotate180(int value) {
+            return value == 0 ? 1 : value == 1 ? 0 : value == 2 ? 3 : 2;
+        }
+    }
+
+    private static final class Horizontal0To3RotationRule implements RotationMetaRule {
+        @Override
+        public boolean matches(Block block, int metadata) {
+            return block != null && classNameContainsAny(block, "bed", "pumpkin", "repeater", "diode", "comparator", "trapdoor", "anvil", "cocoa", "fencegate", "fence_gate");
+        }
+
+        @Override
+        public Integer rotate(int metadata, int angle, boolean inverseRotation) {
+            int facing = metadata & 0x3;
+            int rotated = facing;
+            if (angle == 180) {
+                rotated = (facing + 2) & 0x3;
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                rotated = clockwise ? ((facing + 1) & 0x3) : ((facing + 3) & 0x3);
+            }
+            return Integer.valueOf((metadata & ~0x3) | (rotated & 0x3));
+        }
+    }
+
+    private static final class LadderRotationRule implements RotationMetaRule {
+        @Override
+        public boolean matches(Block block, int metadata) {
+            return block != null && block.blockID == 65;
+        }
+
+        @Override
+        public Integer rotate(int metadata, int angle, boolean inverseRotation) {
+            int mount = metadata & 0x7;
+            int rotated = mount;
+            if (angle == 180) {
+                rotated = mount == 2 ? 3 : mount == 3 ? 2 : mount == 4 ? 5 : mount == 5 ? 4 : mount;
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                if (clockwise) {
+                    rotated = mount == 2 ? 5 : mount == 5 ? 3 : mount == 3 ? 4 : mount == 4 ? 2 : mount;
+                } else {
+                    rotated = mount == 2 ? 4 : mount == 4 ? 3 : mount == 3 ? 5 : mount == 5 ? 2 : mount;
+                }
+            }
+            return Integer.valueOf((metadata & ~0x7) | (rotated & 0x7));
+        }
+    }
+
+    private static final class Cardinal2To5RotationRule implements RotationMetaRule {
+        @Override
+        public boolean matches(Block block, int metadata) {
+            if (block == null) {
+                return false;
+            }
+            return classNameContainsAny(block, "furnace", "chest", "strongbox", "dispenser", "dropper", "ladder", "wallsign", "wall_sign", "sign", "hopper", "oven");
+        }
+
+        @Override
+        public Integer rotate(int metadata, int angle, boolean inverseRotation) {
+            int facing = metadata & 0x7;
+            if (facing < 2 || facing > 5) {
+                return Integer.valueOf(metadata);
+            }
+            int rotated = facing;
+            if (angle == 180) {
+                rotated = facing == 2 ? 3 : facing == 3 ? 2 : facing == 4 ? 5 : 4;
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                if (clockwise) {
+                    rotated = facing == 2 ? 5 : facing == 5 ? 3 : facing == 3 ? 4 : 2;
+                } else {
+                    rotated = facing == 2 ? 4 : facing == 4 ? 3 : facing == 3 ? 5 : 2;
+                }
+            }
+            return Integer.valueOf((metadata & ~0x7) | (rotated & 0x7));
+        }
+    }
+
+    private static boolean classNameContainsAny(Block block, String... keywords) {
+        if (block == null || keywords == null || keywords.length == 0) {
+            return false;
+        }
+        String className = block.getClass().getSimpleName();
+        if (className == null || className.isEmpty()) {
+            return false;
+        }
+        String lower = className.toLowerCase(Locale.ROOT);
+        for (String keyword : keywords) {
+            if (keyword != null && !keyword.isEmpty() && lower.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static final class ButtonRotationRule extends HorizontalMountRule {
+        @Override
+        public boolean matches(Block block, int metadata) {
+            if (block == null) {
+                return false;
+            }
+            int id = block.blockID;
+            return id == 77 || id == 143;
+        }
+
+        @Override
+        public Integer rotate(int metadata, int angle, boolean inverseRotation) {
+            int pressedBit = metadata & 0x8;
+            int mount = metadata & 0x7;
+            int rotated = rotateByQuarterTurns(mount, angle, inverseRotation);
+            return Integer.valueOf(pressedBit | (rotated & 0x7));
+        }
+
+        @Override
+        protected int rotateClockwise(int value) {
+            return value == 1 ? 3 : value == 3 ? 2 : value == 2 ? 4 : value == 4 ? 1 : value;
+        }
+
+        @Override
+        protected int rotateCounterClockwise(int value) {
+            return value == 1 ? 4 : value == 4 ? 2 : value == 2 ? 3 : value == 3 ? 1 : value;
+        }
+
+        @Override
+        protected int rotate180(int value) {
+            return value == 1 ? 2 : value == 2 ? 1 : value == 3 ? 4 : value == 4 ? 3 : value;
+        }
+    }
+
+    private static final class FenceGateRotationRule implements RotationMetaRule {
+        @Override
+        public boolean matches(Block block, int metadata) {
+            return block != null && block.blockID == 107;
+        }
+
+        @Override
+        public Integer rotate(int metadata, int angle, boolean inverseRotation) {
+            int openBit = metadata & 0x4;
+            int facing = metadata & 0x3;
+            int rotated = angle == 180 ? ((facing + 2) & 0x3) : (((facing + (inverseRotation ? (angle == 90 ? 3 : 1) : (angle == 90 ? 1 : 3))) & 0x3));
+            return Integer.valueOf(openBit | rotated);
+        }
+    }
+
+    private static final class DoorRotationRule implements RotationMetaRule {
+        @Override
+        public boolean matches(Block block, int metadata) {
+            if (block == null) {
+                return false;
+            }
+            int id = block.blockID;
+            return id == 64 || id == 71 || id == 208 || id == 209 || id == 210 || id == 211 || id == 212 || id == 253;
+        }
+
+        @Override
+        public Integer rotate(int metadata, int angle, boolean inverseRotation) {
+            if ((metadata & 0x8) != 0) {
+                return Integer.valueOf(metadata);
+            }
+            int openBit = metadata & 0x4;
+            int facing = metadata & 0x3;
+            int rotated = angle == 180 ? ((facing + 2) & 0x3) : (((facing + (inverseRotation ? (angle == 90 ? 3 : 1) : (angle == 90 ? 1 : 3))) & 0x3));
+            return Integer.valueOf(openBit | rotated);
+        }
+    }
+
+    private static final class TorchRotationRule extends HorizontalMountRule {
+        @Override
+        public boolean matches(Block block, int metadata) {
+            if (block == null) {
+                return false;
+            }
+            int id = block.blockID;
+            return id == 50 || id == 75 || id == 76;
+        }
+
+        @Override
+        public Integer rotate(int metadata, int angle, boolean inverseRotation) {
+            int mount = metadata & 0x7;
+            int rotated = rotateByQuarterTurns(mount, angle, inverseRotation);
+            return Integer.valueOf(rotated & 0x7);
+        }
+
+        @Override
+        protected int rotateClockwise(int value) {
+            return value == 1 ? 3 : value == 3 ? 2 : value == 2 ? 4 : value == 4 ? 1 : value;
+        }
+
+        @Override
+        protected int rotateCounterClockwise(int value) {
+            return value == 1 ? 4 : value == 4 ? 2 : value == 2 ? 3 : value == 3 ? 1 : value;
+        }
+
+        @Override
+        protected int rotate180(int value) {
+            return value == 1 ? 2 : value == 2 ? 1 : value == 3 ? 4 : value == 4 ? 3 : value;
+        }
+    }
+
+    private static final class VineRotationRule implements RotationMetaRule {
+        @Override
+        public boolean matches(Block block, int metadata) {
+            return block != null && block.blockID == 106;
+        }
+
+        @Override
+        public Integer rotate(int metadata, int angle, boolean inverseRotation) {
+            int mask = metadata & 0xF;
+            int rotated;
+            if (angle == 180) {
+                rotated = rotateVineMask90(rotateVineMask90(mask));
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                rotated = clockwise ? rotateVineMask90(mask) : rotateVineMask270(mask);
+            }
+            return Integer.valueOf((metadata & ~0xF) | (rotated & 0xF));
+        }
+
+        private int rotateVineMask90(int mask) {
+            int out = 0;
+            if ((mask & 0x1) != 0) out |= 0x2;
+            if ((mask & 0x2) != 0) out |= 0x4;
+            if ((mask & 0x4) != 0) out |= 0x8;
+            if ((mask & 0x8) != 0) out |= 0x1;
+            return out;
+        }
+
+        private int rotateVineMask270(int mask) {
+            int out = 0;
+            if ((mask & 0x1) != 0) out |= 0x8;
+            if ((mask & 0x8) != 0) out |= 0x4;
+            if ((mask & 0x4) != 0) out |= 0x2;
+            if ((mask & 0x2) != 0) out |= 0x1;
+            return out;
+        }
+    }
+
+    // Legacy fallback chain kept for historical comparison and emergency rollback.
+    // Do not use in normal flow: current metadata rotation goes through ROTATION_META_RULES.
+    @Deprecated
+    private Integer tryRotateMetadataByFallbackHandlers(Block block, int metadata, int angle, boolean inverseRotation) {
+        for (RotationMetaFallbackHandler handler : ROTATION_META_FALLBACK_HANDLERS) {
+            if (handler == null || !handler.matches(block)) {
+                continue;
+            }
+            Integer rotated = handler.rotate(block, metadata, angle, inverseRotation);
+            if (rotated != null) {
+                return rotated;
+            }
+        }
+        return null;
+    }
+
+    @Deprecated
+    private static List<RotationMetaFallbackHandler> createRotationMetaFallbackHandlers() {
+        List<RotationMetaFallbackHandler> handlers = new ArrayList<RotationMetaFallbackHandler>();
+        handlers.add(new StairRotationMetaFallbackHandler());
+        handlers.add(new ButtonRotationMetaFallbackHandler());
+        handlers.add(new FenceGateRotationMetaFallbackHandler());
+        handlers.add(new DoorRotationMetaFallbackHandler());
+        handlers.add(new TorchRotationMetaFallbackHandler());
+        handlers.add(new VineRotationMetaFallbackHandler());
+        return Collections.unmodifiableList(handlers);
+    }
+
+    private static int rotateStairFacingClockwise(int facingBits) {
         if (facingBits == 0) {
             return 2;
         }
@@ -2330,7 +3131,7 @@ public class SurvivalSchematicaEventListener implements ITickListener {
         return 0;
     }
 
-    private int rotateStairFacingCounterClockwise(int facingBits) {
+    private static int rotateStairFacingCounterClockwise(int facingBits) {
         if (facingBits == 0) {
             return 3;
         }
@@ -2343,7 +3144,7 @@ public class SurvivalSchematicaEventListener implements ITickListener {
         return 1;
     }
 
-    private int rotateStairFacing180(int facingBits) {
+    private static int rotateStairFacing180(int facingBits) {
         if (facingBits == 0) {
             return 1;
         }
@@ -2355,6 +3156,319 @@ public class SurvivalSchematicaEventListener implements ITickListener {
         }
         return 2;
     }
+
+    @Deprecated
+    private interface RotationMetaFallbackHandler {
+        boolean matches(Block block);
+
+        Integer rotate(Block block, int metadata, int angle, boolean inverseRotation);
+    }
+
+    @Deprecated
+    private static final class StairRotationMetaFallbackHandler implements RotationMetaFallbackHandler {
+        @Override
+        public boolean matches(Block block) {
+            if (block == null) {
+                return false;
+            }
+            String className = block.getClass().getSimpleName();
+            return className != null && className.toLowerCase(Locale.ROOT).contains("stair");
+        }
+
+        @Override
+        public Integer rotate(Block block, int metadata, int angle, boolean inverseRotation) {
+            int upsideDownBit = metadata & 0x4;
+            int facingBits = metadata & 0x3;
+            int rotatedFacing = facingBits;
+            if (angle == 180) {
+                rotatedFacing = rotateStairFacing180(facingBits);
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                rotatedFacing = clockwise
+                        ? rotateStairFacingClockwise(facingBits)
+                        : rotateStairFacingCounterClockwise(facingBits);
+            }
+            return Integer.valueOf(upsideDownBit | rotatedFacing);
+        }
+    }
+
+    @Deprecated
+    private static final class ButtonRotationMetaFallbackHandler implements RotationMetaFallbackHandler {
+        @Override
+        public boolean matches(Block block) {
+            if (block == null) {
+                return false;
+            }
+            int id = block.blockID;
+            return id == 77 || id == 143;
+        }
+
+        @Override
+        public Integer rotate(Block block, int metadata, int angle, boolean inverseRotation) {
+            int pressedBit = metadata & 0x8;
+            int mount = metadata & 0x7;
+            int rotatedMount = mount;
+            if (angle == 180) {
+                rotatedMount = rotateButtonMount180(mount);
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                rotatedMount = clockwise
+                        ? rotateButtonMountClockwise(mount)
+                        : rotateButtonMountCounterClockwise(mount);
+            }
+            return Integer.valueOf(pressedBit | (rotatedMount & 0x7));
+        }
+
+        private int rotateButtonMountClockwise(int mount) {
+            if (mount == 1) { // west
+                return 3;     // north
+            }
+            if (mount == 3) { // north
+                return 2;     // east
+            }
+            if (mount == 2) { // east
+                return 4;     // south
+            }
+            if (mount == 4) { // south
+                return 1;     // west
+            }
+            return mount;
+        }
+
+        private int rotateButtonMountCounterClockwise(int mount) {
+            if (mount == 1) { // west
+                return 4;     // south
+            }
+            if (mount == 4) { // south
+                return 2;     // east
+            }
+            if (mount == 2) { // east
+                return 3;     // north
+            }
+            if (mount == 3) { // north
+                return 1;     // west
+            }
+            return mount;
+        }
+
+        private int rotateButtonMount180(int mount) {
+            if (mount == 1) {
+                return 2;
+            }
+            if (mount == 2) {
+                return 1;
+            }
+            if (mount == 3) {
+                return 4;
+            }
+            if (mount == 4) {
+                return 3;
+            }
+            return mount;
+        }
+    }
+
+    @Deprecated
+    private static final class FenceGateRotationMetaFallbackHandler implements RotationMetaFallbackHandler {
+        @Override
+        public boolean matches(Block block) {
+            return block != null && block.blockID == 107;
+        }
+
+        @Override
+        public Integer rotate(Block block, int metadata, int angle, boolean inverseRotation) {
+            int openBit = metadata & 0x4;
+            int facing = metadata & 0x3;
+            int rotatedFacing = facing;
+            if (angle == 180) {
+                rotatedFacing = (facing + 2) & 0x3;
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                rotatedFacing = clockwise ? ((facing + 1) & 0x3) : ((facing + 3) & 0x3);
+            }
+            return Integer.valueOf(openBit | rotatedFacing);
+        }
+    }
+
+    @Deprecated
+    private static final class DoorRotationMetaFallbackHandler implements RotationMetaFallbackHandler {
+        @Override
+        public boolean matches(Block block) {
+            if (block == null) {
+                return false;
+            }
+            int id = block.blockID;
+            return id == 64 || id == 71 || id == 208 || id == 209 || id == 210 || id == 211 || id == 212 || id == 253;
+        }
+
+        @Override
+        public Integer rotate(Block block, int metadata, int angle, boolean inverseRotation) {
+            if ((metadata & 0x8) != 0) {
+                // Upper half: keep hinge bit/state as-is for pure rotation.
+                return Integer.valueOf(metadata);
+            }
+            int openBit = metadata & 0x4;
+            int facing = metadata & 0x3;
+            int rotatedFacing = facing;
+            if (angle == 180) {
+                rotatedFacing = (facing + 2) & 0x3;
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                rotatedFacing = clockwise ? ((facing + 1) & 0x3) : ((facing + 3) & 0x3);
+            }
+            return Integer.valueOf(openBit | rotatedFacing);
+        }
+    }
+
+    @Deprecated
+    private static final class TorchRotationMetaFallbackHandler implements RotationMetaFallbackHandler {
+        @Override
+        public boolean matches(Block block) {
+            if (block == null) {
+                return false;
+            }
+            int id = block.blockID;
+            return id == 50 || id == 75 || id == 76;
+        }
+
+        @Override
+        public Integer rotate(Block block, int metadata, int angle, boolean inverseRotation) {
+            int mount = metadata & 0x7;
+            int rotatedMount = mount;
+            if (angle == 180) {
+                rotatedMount = rotateTorchMount180(mount);
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                rotatedMount = clockwise
+                        ? rotateTorchMountClockwise(mount)
+                        : rotateTorchMountCounterClockwise(mount);
+            }
+            return Integer.valueOf(rotatedMount & 0x7);
+        }
+
+        private int rotateTorchMountClockwise(int mount) {
+            if (mount == 1) { // west
+                return 3;     // north
+            }
+            if (mount == 3) { // north
+                return 2;     // east
+            }
+            if (mount == 2) { // east
+                return 4;     // south
+            }
+            if (mount == 4) { // south
+                return 1;     // west
+            }
+            return mount; // floor/invalid keep
+        }
+
+        private int rotateTorchMountCounterClockwise(int mount) {
+            if (mount == 1) {
+                return 4;
+            }
+            if (mount == 4) {
+                return 2;
+            }
+            if (mount == 2) {
+                return 3;
+            }
+            if (mount == 3) {
+                return 1;
+            }
+            return mount;
+        }
+
+        private int rotateTorchMount180(int mount) {
+            if (mount == 1) {
+                return 2;
+            }
+            if (mount == 2) {
+                return 1;
+            }
+            if (mount == 3) {
+                return 4;
+            }
+            if (mount == 4) {
+                return 3;
+            }
+            return mount;
+        }
+    }
+
+    @Deprecated
+    private static final class VineRotationMetaFallbackHandler implements RotationMetaFallbackHandler {
+        @Override
+        public boolean matches(Block block) {
+            return block != null && block.blockID == 106;
+        }
+
+        @Override
+        public Integer rotate(Block block, int metadata, int angle, boolean inverseRotation) {
+            int mask = metadata & 0xF;
+            int rotated = mask;
+            if (angle == 180) {
+                rotated = rotateVineMask90(rotateVineMask90(mask));
+            } else {
+                boolean clockwise = angle == 90;
+                if (inverseRotation) {
+                    clockwise = !clockwise;
+                }
+                rotated = clockwise ? rotateVineMask90(mask) : rotateVineMask270(mask);
+            }
+            return Integer.valueOf((metadata & ~0xF) | (rotated & 0xF));
+        }
+
+        // Bit layout (1.6.x): 0x1=south, 0x2=west, 0x4=north, 0x8=east
+        private int rotateVineMask90(int mask) {
+            int out = 0;
+            if ((mask & 0x1) != 0) { // south -> west
+                out |= 0x2;
+            }
+            if ((mask & 0x2) != 0) { // west -> north
+                out |= 0x4;
+            }
+            if ((mask & 0x4) != 0) { // north -> east
+                out |= 0x8;
+            }
+            if ((mask & 0x8) != 0) { // east -> south
+                out |= 0x1;
+            }
+            return out;
+        }
+
+        private int rotateVineMask270(int mask) {
+            int out = 0;
+            if ((mask & 0x1) != 0) { // south -> east
+                out |= 0x8;
+            }
+            if ((mask & 0x8) != 0) { // east -> north
+                out |= 0x4;
+            }
+            if ((mask & 0x4) != 0) { // north -> west
+                out |= 0x2;
+            }
+            if ((mask & 0x2) != 0) { // west -> south
+                out |= 0x1;
+            }
+            return out;
+        }
+    }
+
 
     private ISchematic mirrorSchematic(ISchematic source, String axis) {
         Schematic mirrored = new Schematic(copyIcon(source), source.getWidth(), source.getHeight(), source.getLength());
@@ -2455,7 +3569,7 @@ public class SurvivalSchematicaEventListener implements ITickListener {
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line6", "/schematica save <x1> <y1> <z1> <x2> <y2> <z2> <name>"));
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line7", "/schematica create <name> (from stick selection)"));
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line8", "/schematica sel status | /schematica sel clear"));
-        event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line9", "/schematica printer print <x> <y> <z> [replace|solid|nonair] | /schematica printer undo <x> <y> <z> | /schematica printer provide <x> <y> <z> <itemId> <subtype> [count] | /schematica printer health <x> <y> <z> | /schematica printer sync <x> <y> <z>"));
+        event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.line9", "/schematica printer print <x> <y> <z> [replace|solid|nonair] | /schematica printer undo <x> <y> <z> | /schematica printer provide <x> <y> <z> <itemId> <subtype> [count] | /schematica printer providefood <x> <y> <z> [hungerTarget] | /schematica printer health <x> <y> <z> | /schematica printer sync <x> <y> <z>"));
         event.getPlayer().addChatMessage(I18n.tr("schematica.command.help.rule", "Rule: survival paste consumes inventory materials; no entity copy; printed containers are always empty."));
     }
 
@@ -2960,9 +4074,25 @@ public class SurvivalSchematicaEventListener implements ITickListener {
         private int totalConsumed;
         private int totalRequiredBlocks;
         private int requiredEmeralds;
+        private int requiredFoodHunger;
         private int materialTypes;
         private final Map<MaterialKey, Integer> consumedByType = new HashMap<MaterialKey, Integer>();
         private final List<MaterialShortage> shortages = new ArrayList<MaterialShortage>();
+    }
+
+    private static final class FoodTransferResult {
+        private int movedCount;
+        private int movedHunger;
+    }
+
+    private static final class FoodUnit {
+        private final int value;
+        private final MaterialKey key;
+
+        private FoodUnit(int value, MaterialKey key) {
+            this.value = value;
+            this.key = key;
+        }
     }
 
     private static final class PasteConflict {

@@ -1,216 +1,244 @@
-tile.schematica_printer.name=蓝图打印机
-item.schematica_printer.name=蓝图打印机
-gui.schematica_printer.title=蓝图打印机
+## 打印机 GUI / 提示
+tile.schematica_printer.name=投影打印机
+item.schematica_printer.name=投影打印机
+gui.schematica_printer.title=投影打印机
 gui.schematica_printer.target=目标方块
-gui.schematica_printer.target_line=目标方块: [%d,%d,%d]
-gui.schematica_printer.no_files=/schematics 目录未找到蓝图文件
-gui.schematica_printer.selected=候选
-gui.schematica_printer.selected_line=候选: %d/%d  %s
-gui.schematica_printer.confirmed_line=已确认: %s%s
-gui.schematica_printer.dimensions= (%dx%dx%d)
-gui.schematica_printer.transform=变换
-gui.schematica_printer.origin=北向打印原点
-gui.schematica_printer.transform_line=变换: 旋转=%d  X镜像=%s  Z镜像=%s
-gui.schematica_printer.origin_line=北向打印原点: [%d,%d,%d]
-gui.schematica_printer.opacity_line=投影透明度: 虚影=%d%%  线框=%d%%  (- / =)
-gui.schematica_printer.hotkeys=Enter/L 确认并加载  C 确认并加载  P 打印  U 撤回  [ ] 切换  G/X/Z 变换  -/= 透明度
-gui.schematica_printer.button.rescan=重扫
+gui.schematica_printer.target_line=目标方块：[%d, %d, %d]
+gui.schematica_printer.no_files=未找到蓝图文件，请放入 /schematics 文件夹
+gui.schematica_printer.selected=当前候选
+gui.schematica_printer.selected_line=候选：%d/%d  %s
+gui.schematica_printer.confirmed_line=已确认：%s%s
+gui.schematica_printer.dimensions=（%d×%d×%d）
+gui.schematica_printer.transform=变换设置
+gui.schematica_printer.origin=打印原点（北向）
+gui.schematica_printer.transform_line=变换：旋转 %d 圈，镜像X %s，镜像Z %s
+gui.schematica_printer.origin_line=打印原点（北向）：[%d, %d, %d]
+gui.schematica_printer.opacity_line=投影透明度：虚影 %d%% / 轮廓 %d%%  （- / = 调整）
+gui.schematica_printer.hotkeys=回车/L 确认并加载 | C 确认并加载 | P 打印 | U 撤销 | [ ] 切换文件 | G/X/Z 变换 | -/= 透明度
+gui.schematica_printer.button.rescan=重新扫描
 gui.schematica_printer.button.load=确认并加载
 gui.schematica_printer.button.close=关闭
-gui.schematica_printer.button.print=打印
-gui.schematica_printer.button.undo=撤回
+gui.schematica_printer.button.print=开始打印
+gui.schematica_printer.button.undo=撤销上一步
 gui.schematica_printer.button.rotate=旋转
-gui.schematica_printer.button.mirror_x=X镜像
-gui.schematica_printer.button.mirror_z=Z镜像
-gui.schematica_printer.button.rotate_state=旋转:%d
-gui.schematica_printer.button.mirror_x_state=X镜像:%s
-gui.schematica_printer.button.mirror_z_state=Z镜像:%s
-gui.schematica_printer.button.alpha_down=透-%d
-gui.schematica_printer.button.alpha_up=透+%d
-gui.schematica_printer.value.on=开
-gui.schematica_printer.value.off=关
+gui.schematica_printer.button.mirror_x=X 轴镜像
+gui.schematica_printer.button.mirror_z=Z 轴镜像
+gui.schematica_printer.button.rotate_state=旋转：%d
+gui.schematica_printer.button.mirror_x_state=X 轴镜像：%s
+gui.schematica_printer.button.mirror_z_state=Z 轴镜像：%s
+gui.schematica_printer.button.alpha_down=透明度 -%d%%
+gui.schematica_printer.button.alpha_up=透明度 +%d%%
+gui.schematica_printer.value.on=开启
+gui.schematica_printer.value.off=关闭
 gui.schematica_printer.value.none=<无>
-gui.schematica_printer.status.put_files=请把 .schematic 文件放到 /schematics 目录。
-gui.schematica_printer.status.select_load=先选文件，按 Enter/L 加载投影，再按 P 打印。
-gui.schematica_printer.status.select_confirm=先选文件，按 Enter/L 确认并加载投影。
-gui.schematica_printer.status.no_selection=未选择蓝图文件。
-gui.schematica_printer.status.failed_load=加载所选蓝图失败。
-gui.schematica_printer.status.outline_loaded=投影已加载到 [%d,%d,%d]
-gui.schematica_printer.status.printed=已按 replace 模式执行打印。
-gui.schematica_printer.status.print_requested=已请求打印（使用打印机库存）。
-gui.schematica_printer.status.print_requested_wait=已请求打印（使用打印机库存），等待完成...
-gui.schematica_printer.status.upload_failed=上传投影到服务端失败。
-gui.schematica_printer.status.print_requested_unselected=已请求打印，投影已重置为未确认。
-gui.schematica_printer.status.print_pending_timeout=打印仍在进行或失败；当前选择已保留。
-gui.schematica_printer.status.undo=已请求撤回。
-gui.schematica_printer.status.no_confirmed=尚未确认蓝图。请按 Enter/L 确认并加载。
-gui.schematica_printer.status.opacity=投影透明度已更新: 虚影=%d%% 线框=%d%%
-gui.schematica_printer.chat.projection_loaded=投影已加载: %s -> [%d,%d,%d] (旋转=%d, X镜像=%s, Z镜像=%s)
-gui.schematica_printer.chat.outline_ready=投影已就绪。按 P 打印，或按 Esc 退出后查看投影。
-gui.schematica_printer.chat.print_executed=蓝图打印机：已提交打印请求。
-gui.schematica_printer.supply.title=材料供给（点击一行即可提供该材料）
-gui.schematica_printer.supply.empty=当前没有可显示的需求材料。
-gui.schematica_printer.supply.scroll_hint=可拖动滚动条，或使用滚轮 / 上下键
-gui.schematica_printer.supply.entry=%s | 需求:%d 已存:%d 背包:%d 缺少:%d
-gui.schematica_printer.supply.no_printer=打印机方块不存在或无效。
-gui.schematica_printer.supply.already_enough=打印机内该材料已足够。
-gui.schematica_printer.supply.no_player_item=你的背包里没有这个物品。
-gui.schematica_printer.supply.too_fast=请求过快，请稍后再试。
-gui.schematica_printer.supply.provide_sent=已请求供给：%s x%d
-gui.schematica_printer.supply.syncing=正在从服务端同步打印机库存...
+gui.schematica_printer.status.put_files=请将 .schematic 文件放入 /schematics 文件夹
+gui.schematica_printer.status.select_load=选择文件后按回车或 L 加载轮廓，再按 P 打印
+gui.schematica_printer.status.select_confirm=选择文件后按回车或 L 确认并加载投影
+gui.schematica_printer.status.no_selection=未选择任何蓝图
+gui.schematica_printer.status.failed_load=加载蓝图失败
+gui.schematica_printer.status.outline_loaded=轮廓已加载至 [%d, %d, %d]
+gui.schematica_printer.status.printed=打印完成（替换模式）
+gui.schematica_printer.status.print_requested=打印请求已发送（使用打印机存储）
+gui.schematica_printer.status.print_requested_wait=打印请求已发送，正在等待完成…
+gui.schematica_printer.status.upload_failed=上传投影至服务器失败
+gui.schematica_printer.status.print_requested_unselected=打印请求已发送，投影已重置为未确认状态
+gui.schematica_printer.status.print_pending_timeout=打印仍在进行或已失败，当前选择保持不变
+gui.schematica_printer.status.undo=撤销请求已发送
+gui.schematica_printer.status.no_confirmed=尚未确认蓝图，请按回车或 L 确认并加载
+gui.schematica_printer.status.opacity=投影透明度已更新：虚影 %d%%，轮廓 %d%%
+gui.schematica_printer.chat.projection_loaded=投影已加载：%s → [%d, %d, %d]（旋转 %d，镜像X %s，镜像Z %s）
+gui.schematica_printer.chat.outline_ready=轮廓已就绪，按 P 打印，或按 Esc 检查投影
+gui.schematica_printer.chat.print_executed=投影打印机：打印请求已发送
+gui.schematica_printer.supply.title=补充材料（点击物品行即可提供）
+gui.schematica_printer.supply.empty=当前无需任何材料
+gui.schematica_printer.supply.scroll_hint=拖动滚动条，或使用鼠标滚轮 / ↑ / ↓
+gui.schematica_printer.supply.entry=%s | 需要：%d  已存：%d  背包：%d  缺口：%d
+gui.schematica_printer.supply.no_printer=打印机方块不存在或已失效
+gui.schematica_printer.supply.already_enough=打印机中该材料已足够
+gui.schematica_printer.supply.no_player_item=您的背包中没有此物品
+gui.schematica_printer.supply.too_fast=操作过于频繁，请稍后再试
+gui.schematica_printer.supply.provide_sent=已请求补充：%s × %d
+gui.schematica_printer.supply.syncing=正在从服务器同步打印机物品栏…
 
-gui.schematica_control.title=Schematica 控制台
-gui.schematica_control.no_loaded=当前未加载蓝图（使用 /schematica load <name>）
-gui.schematica_control.loaded_line=已加载: %s  %dx%dx%d
-gui.schematica_control.origin_line=原点: [%d,%d,%d]
-gui.schematica_control.files_none=文件: 无
-gui.schematica_control.files_line=文件: %d/%d  %s
-gui.schematica_control.hotkeys=快捷键: [ ] / L / C / P / O / U / H / 1 2 3 / WASDQE（P/O 仅创造模式）
-gui.schematica_control.opacity_line=投影透明度: 虚影=%d%%  线框=%d%%  (- / =)
-gui.schematica_control.label.create_name=创建名称
-gui.schematica_control.label.move_x=移动 X
-gui.schematica_control.label.move_y=Y
-gui.schematica_control.label.move_z=Z
-gui.schematica_control.button.rescan=R 重扫
-gui.schematica_control.button.file_prev=[
-gui.schematica_control.button.file_next=]
-gui.schematica_control.button.file_load=L 加载所选
-gui.schematica_control.button.create=C 创建
-gui.schematica_control.button.status=T 状态
-gui.schematica_control.button.paste_replace=P 替换粘贴
-gui.schematica_control.button.paste_solid=O 实体粘贴
-gui.schematica_control.button.undo=U 撤回
-gui.schematica_control.button.origin_here=H 原点到此
-gui.schematica_control.button.rotate_90=1 旋转 90
-gui.schematica_control.button.rotate_180=2 旋转 180
-gui.schematica_control.button.rotate_270=3 旋转 270
-gui.schematica_control.button.mirror_x=X X镜像
-gui.schematica_control.button.mirror_z=Z Z镜像
-gui.schematica_control.button.nudge_x_pos=D +X
-gui.schematica_control.button.nudge_x_neg=A -X
-gui.schematica_control.button.nudge_z_pos=S +Z
-gui.schematica_control.button.nudge_z_neg=W -Z
-gui.schematica_control.button.nudge_y_pos=E +Y
-gui.schematica_control.button.nudge_y_neg=Q -Y
-gui.schematica_control.button.unload=K 卸载
-gui.schematica_control.button.close=Esc 关闭
-gui.schematica_control.button.alpha_down=- 透明度 (%d%%)
-gui.schematica_control.button.alpha_up=+ 透明度 (%d%%)
-gui.schematica_control.button.move_apply=Enter 应用移动
-gui.schematica_control.msg.no_files=未找到蓝图文件。
-gui.schematica_control.msg.move_invalid_int=移动坐标必须是整数。
-gui.schematica_control.msg.create_empty=创建名称不能为空。
-gui.schematica_control.msg.selection_missing=尚未设置选区。请先用木棍设置 Pos1/Pos2。
-gui.schematica_control.msg.paste_disabled=生存模式已禁用直接粘贴，请使用打印机方块 GUI。
-key.schematica.menu=打开 Schematica 控制台
+
+## 控制 GUI / 提示
+gui.schematica_control.title=投影控制面板
+gui.schematica_control.no_loaded=未加载投影，请使用 /schematica load <名称>
+gui.schematica_control.loaded_line=已加载：%s  %d×%d×%d
+gui.schematica_control.origin_line=原点：[%d, %d, %d]
+gui.schematica_control.files_none=蓝图列表：无
+gui.schematica_control.files_line=蓝图列表：%d/%d  %s
+gui.schematica_control.hotkeys=快捷键：[ ] / L / C / P / O / U / H / 1 2 3 / WASDQE（P/O 仅创造模式可用）
+gui.schematica_control.opacity_line=投影透明度：虚影 %d%% / 轮廓 %d%%  （- / = 调整）
+gui.schematica_control.label.create_name=名称
+gui.schematica_control.label.move_x=X 偏移
+gui.schematica_control.label.move_y=Y 偏移
+gui.schematica_control.label.move_z=Z 偏移
+gui.schematica_control.button.rescan=R / 重新扫描
+gui.schematica_control.button.file_prev=[ / 上一个
+gui.schematica_control.button.file_next=] / 下一个
+gui.schematica_control.button.file_load=L / 加载所选
+gui.schematica_control.button.create=C / 创建
+gui.schematica_control.button.status=T / 查看状态
+gui.schematica_control.button.paste_replace=P / 替换粘贴
+gui.schematica_control.button.paste_solid=O / 实体粘贴
+gui.schematica_control.button.undo=U / 撤销
+gui.schematica_control.button.origin_here=H / 设此处为原点
+gui.schematica_control.button.rotate_90=1 / 旋转 90°
+gui.schematica_control.button.rotate_180=2 / 旋转 180°
+gui.schematica_control.button.rotate_270=3 / 旋转 270°
+gui.schematica_control.button.mirror_x=X / X 轴镜像
+gui.schematica_control.button.mirror_z=Z / Z 轴镜像
+gui.schematica_control.button.nudge_x_pos=D / +X
+gui.schematica_control.button.nudge_x_neg=A / -X
+gui.schematica_control.button.nudge_z_pos=S / +Z
+gui.schematica_control.button.nudge_z_neg=W / -Z
+gui.schematica_control.button.nudge_y_pos=E / +Y
+gui.schematica_control.button.nudge_y_neg=Q / -Y
+gui.schematica_control.button.unload=K / 卸载
+gui.schematica_control.button.close=Esc / 关闭
+gui.schematica_control.button.alpha_down=- / 降低透明度 (%d%%)
+gui.schematica_control.button.alpha_up=+ / 提高透明度 (%d%%)
+gui.schematica_control.button.move_apply=回车 / 应用移动
+gui.schematica_control.msg.no_files=未找到任何蓝图文件
+gui.schematica_control.msg.move_invalid_int=移动偏移量必须为整数
+gui.schematica_control.msg.create_empty=名称不能为空
+gui.schematica_control.msg.selection_missing=请先用木棍设置选区 Pos1 和 Pos2
+gui.schematica_control.msg.paste_disabled=生存模式下无法直接粘贴，请使用打印机方块
+
+
+## 按键绑定
+key.schematica.menu=打开投影菜单
 gui.schematica_control.value.unknown=<未知>
 
-schematica.selection.pos1_set=Schematica Pos1 已设置: [%d,%d,%d] (右键)
-schematica.selection.pos2_set=Schematica Pos2 已设置: [%d,%d,%d] (Shift+右键)
-schematica.selection.ready=选区就绪: [%d,%d,%d] -> [%d,%d,%d]  %dx%dx%d (%d 方块)
-schematica.selection.create_hint=用法: /schematica create <name>
 
-schematica.command.list.count=Schematica 文件数: %d
-schematica.command.unload.done=Schematica 投影已卸载。
-schematica.command.sel.usage=用法: /schematica sel <status|clear>
-schematica.command.sel.pos1_set=选区 Pos1: [%d,%d,%d]
-schematica.command.sel.pos1_unset=选区 Pos1: <未设置>
-schematica.command.sel.pos2_set=选区 Pos2: [%d,%d,%d]
-schematica.command.sel.pos2_unset=选区 Pos2: <未设置>
-schematica.command.sel.cleared=选区已清空。
-schematica.command.load.usage=用法: /schematica load <name>
-schematica.command.load.not_found=未找到蓝图: %s
-schematica.command.load.failed=加载蓝图失败: %s
-schematica.command.load.failed_reason=原因: %s
-schematica.command.load.done=已加载 %s (%dx%dx%d) 到 [%d,%d,%d]
-schematica.command.status.no_loaded=当前未加载蓝图。使用 /schematica load <name>。
-schematica.command.status.loaded=已加载 %s (%dx%dx%d, 方块=%d) 原点 [%d,%d,%d], 撤回=%s
+## 选区提示
+schematica.selection.pos1_set=投影选区起点 Pos1 已设为 [%d, %d, %d]（右键单击）
+schematica.selection.pos2_set=投影选区终点 Pos2 已设为 [%d, %d, %d]（Shift+右键单击）
+schematica.selection.ready=选区已就绪：[%d, %d, %d] → [%d, %d, %d]  %d×%d×%d（%d 个方块）
+schematica.selection.create_hint=使用 /schematica create <名称> 创建蓝图
+
+
+## 命令反馈（核心部分精简）
+schematica.command.list.count=蓝图文件数量：%d
+schematica.command.unload.done=已卸载投影
+schematica.command.sel.usage=用法：/schematica sel <status|clear>
+schematica.command.sel.pos1_set=选区起点 Pos1：[%d, %d, %d]
+schematica.command.sel.pos1_unset=选区起点 Pos1：未设置
+schematica.command.sel.pos2_set=选区终点 Pos2：[%d, %d, %d]
+schematica.command.sel.pos2_unset=选区终点 Pos2：未设置
+schematica.command.sel.cleared=选区已清除
+schematica.command.load.usage=用法：/schematica load <名称>
+schematica.command.load.not_found=未找到蓝图：%s
+schematica.command.load.failed=加载蓝图失败：%s
+schematica.command.load.failed_reason=原因：%s
+schematica.command.load.done=已加载 %s（%d×%d×%d）至 [%d, %d, %d]
+schematica.command.status.no_loaded=未加载任何投影，请使用 /schematica load <名称>
+schematica.command.status.loaded=已加载 %s（%d×%d×%d，%d 个方块）原点 [%d, %d, %d]，撤销状态：%s
 schematica.command.status.undo_ready=可用
-schematica.command.status.undo_empty=无
-schematica.command.no_loaded=当前未加载蓝图。
-schematica.command.origin.done=投影原点已设置为 [%d,%d,%d]
-schematica.command.origin.usage=用法: /schematica origin here
-schematica.command.move.usage=用法: /schematica move <x> <y> <z>
-schematica.command.move.done=投影已移动到 [%d,%d,%d]
-schematica.command.coords_int=坐标必须是整数。
-schematica.command.nudge.usage=用法: /schematica nudge <dx> <dy> <dz>
-schematica.command.nudge.done=投影已微调到 [%d,%d,%d]
-schematica.command.offsets_int=偏移量必须是整数。
-schematica.command.rotate.usage=用法: /schematica rotate <90|180|270>
-schematica.command.rotate.angle=角度必须是以下之一: 90, 180, 270。
-schematica.command.rotate.done=投影已旋转 %d 度。新尺寸: %dx%dx%d
-schematica.command.mirror.usage=用法: /schematica mirror <x|z>
-schematica.command.mirror.axis=镜像轴必须是 x 或 z。
-schematica.command.mirror.done=投影已按 %s 轴镜像。
-schematica.command.no_world=无可用世界。
-schematica.command.paste.usage=用法: /schematica paste [replace|solid|nonair]
-schematica.command.paste.disabled=生存模式已禁用直接粘贴，请使用打印机 GUI 进行打印。
-schematica.command.paste.too_large=蓝图体积过大，无法粘贴。最大方块数: %d
-schematica.command.paste.bounds=无法粘贴: %s
-schematica.command.paste.material_shortage=材料不足，无法粘贴。缺少 %d 种:
-schematica.command.paste.material_more=... 省略其余 %d 行。
-schematica.command.paste.undo_capture_failed=捕获撤回快照失败。
-schematica.command.paste.done=已粘贴 %s mode=%s, materialsUsed=%d, materialTypes=%d: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s
-schematica.command.paste.failed_suffix=, failed=%d
-schematica.command.undo.no_snapshot=没有可撤回快照。
-schematica.command.undo.bounds=无法撤回: %s
-schematica.command.undo.done=撤回已恢复 %s: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d%s
-schematica.command.save.usage=用法: /schematica save <x1> <y1> <z1> <x2> <y2> <z2> <name>
-schematica.command.file_name_invalid=蓝图名称无效。
-schematica.command.create.usage=用法: /schematica create <name>
-schematica.command.create.selection_incomplete=选区不完整。请用木棍设置: 右键=Pos1，Shift+右键=Pos2。
-schematica.command.save.selection_too_large=选区过大。最大方块数: %d
-schematica.command.save.capture_failed=捕获世界区域失败。
-schematica.command.save.failed=保存蓝图失败: %s
-schematica.command.create.done=已创建并加载投影 %s (%dx%dx%d, 仅建筑方块) 到 [%d,%d,%d]
-schematica.command.save.done=已保存 %s (%dx%dx%d, 仅建筑方块)
-schematica.command.paste.shortage.internal=内部错误（缺少 player/inventory/world）。
-schematica.command.paste.shortage.no_item=%s（无可携带物品）
-schematica.command.paste.shortage.inventory_changed=消耗材料时背包已变化。
-schematica.command.paste.shortage.block_label=%s [id=%d,meta=%d]
-schematica.command.paste.shortage.item_fallback=item#%d:%d
-schematica.command.paste.shortage.entry=%s x%d
+schematica.command.status.undo_empty=空
+schematica.command.no_loaded=未加载投影
+schematica.command.origin.done=投影原点已移至 [%d, %d, %d]
+schematica.command.origin.usage=用法：/schematica origin here
+schematica.command.move.usage=用法：/schematica move <x> <y> <z>
+schematica.command.move.done=投影已移至 [%d, %d, %d]
+schematica.command.coords_int=坐标必须为整数
+schematica.command.nudge.usage=用法：/schematica nudge <dx> <dy> <dz>
+schematica.command.nudge.done=投影已偏移至 [%d, %d, %d]
+schematica.command.offsets_int=偏移量必须为整数
+schematica.command.rotate.usage=用法：/schematica rotate <90|180|270>
+schematica.command.rotate.angle=角度必须为 90、180 或 270
+schematica.command.rotate.done=投影已旋转 %d 度，新尺寸：%d×%d×%d
+schematica.command.mirror.usage=用法：/schematica mirror <x|z>
+schematica.command.mirror.axis=镜像轴必须为 x 或 z
+schematica.command.mirror.done=投影已在 %s 轴上镜像
+schematica.command.no_world=无法获取世界信息
+schematica.command.paste.usage=用法：/schematica paste [replace|solid|nonair]
+schematica.command.paste.disabled=生存模式无法直接粘贴，请使用打印机
+schematica.command.paste.too_large=蓝图过大（上限 %d 个方块）
+schematica.command.paste.bounds=无法粘贴：%s
+schematica.command.paste.material_shortage=材料不足，缺少 %d 种：
+schematica.command.paste.material_more=…（省略 %d 行）
+schematica.command.paste.undo_capture_failed=无法保存撤销快照
+schematica.command.paste.done=粘贴完成：%s 模式，消耗材料 %d 种共 %d 个 → 放置 %d，清除 %d，清空容器 %d，未变化 %d%s
+schematica.command.paste.failed_suffix=，失败 %d
+schematica.command.undo.no_snapshot=无可用撤销记录
+schematica.command.undo.bounds=无法撤销：%s
+schematica.command.undo.done=撤销完成：%s → 放置 %d，清除 %d，清空容器 %d，未变化 %d%s
+schematica.command.save.usage=用法：/schematica save <x1> <y1> <z1> <x2> <y2> <z2> <名称>
+schematica.command.file_name_invalid=蓝图名称无效
+schematica.command.create.usage=用法：/schematica create <名称>
+schematica.command.create.selection_incomplete=选区不完整，请用木棍右键设置起点，Shift+右键设置终点
+schematica.command.save.selection_too_large=选区过大（上限 %d 个方块）
+schematica.command.save.capture_failed=无法捕获该区域
+schematica.command.save.failed=保存蓝图失败：%s
+schematica.command.create.done=已从选区创建并加载投影 %s（%d×%d×%d，仅建筑方块）至 [%d, %d, %d]
+schematica.command.save.done=已保存 %s（%d×%d×%d，仅建筑方块）
+schematica.command.paste.shortage.internal=内部错误（玩家/物品栏/世界信息缺失）
+schematica.command.paste.shortage.no_item=%s（无对应手持物品）
+schematica.command.paste.shortage.inventory_changed=消耗材料时物品栏发生变化
+schematica.command.paste.shortage.block_label=%s [id=%d, meta=%d]
+schematica.command.paste.shortage.item_fallback=物品 #%d:%d
+schematica.command.paste.shortage.entry=%s × %d
 schematica.command.value.unknown=<未知>
 schematica.command.value.air=<空气>
-schematica.command.bounds.invalid_size=区域尺寸无效。
-schematica.command.bounds.y_outside=Y 范围 %d..%d 超出世界边界 %d..%d。
-schematica.command.bounds.xz_overflow=X/Z 范围溢出: [%d,%d]..[%d,%d]。
-schematica.command.help.title=生存 Schematica 命令：
-schematica.command.help.line1=/schematica help | /schematica list
-schematica.command.help.line2=/schematica load <name> | /schematica unload | /schematica status
-schematica.command.help.line3=/schematica origin here | /schematica move <x> <y> <z> | /schematica nudge <dx> <dy> <dz>
+schematica.command.bounds.invalid_size=区域尺寸无效
+schematica.command.bounds.y_outside=Y 轴范围 %d~%d 超出世界边界 %d~%d
+schematica.command.bounds.xz_overflow=X/Z 轴范围溢出：[%d, %d] ~ [%d, %d]
+schematica.command.help.title=生存模式投影模组命令：
+schematica.command.help.line1=/schematica help          | /schematica list
+schematica.command.help.line2=/schematica load <名称>     | /schematica unload | /schematica status
+schematica.command.help.line3=/schematica origin here    | /schematica move <x> <y> <z> | /schematica nudge <dx> <dy> <dz>
 schematica.command.help.line4=/schematica rotate <90|180|270> | /schematica mirror <x|z>
-schematica.command.help.line5=/schematica paste <仅创造可用，生存禁用> | /schematica undo
-schematica.command.help.line6=/schematica save <x1> <y1> <z1> <x2> <y2> <z2> <name>
-schematica.command.help.line7=/schematica create <name> (from stick selection)
+schematica.command.help.line5=/schematica paste <仅创造模式>    | /schematica undo
+schematica.command.help.line6=/schematica save <x1> <y1> <z1> <x2> <y2> <z2> <名称>
+schematica.command.help.line7=/schematica create <名称>（从木棍选区创建）
 schematica.command.help.line8=/schematica sel status | /schematica sel clear
-schematica.command.help.line9=/schematica printer print <x> <y> <z> [replace|solid|nonair] | /schematica printer undo <x> <y> <z> | /schematica printer provide <x> <y> <z> <itemId> <subtype> [count] | /schematica printer health <x> <y> <z> | /schematica printer sync <x> <y> <z>
-schematica.command.printer.usage=用法: /schematica printer <print|undo|provide|health|sync> ...
-schematica.command.printer.print.usage=用法: /schematica printer print <x> <y> <z> [replace|solid|nonair]
-schematica.command.printer.print.no_projection=当前无可用于打印的投影。请在服务端加载，或启用 printer.clientProjectionUpload。
-schematica.command.printer.print.blocked=打印被阻止，坐标 [%d,%d,%d] 存在 %s[%d:%d]，目标方块为 %s[%d:%d]。
-schematica.command.printer.not_found=在 [%d,%d,%d] 未找到打印机。
-schematica.command.printer.print.rollback=打印已中止；已尝试回滚 %d 个已消耗材料（返还=%d，溢出物掉落在附近）。
-schematica.command.printer.print.queued=打印机 [%d,%d,%d] 已加入打印任务：%s，模式=%s，预计方块=%d。
-schematica.command.printer.print.queue_busy=打印队列繁忙，请稍后重试。
-schematica.command.printer.print.internal_failed=打印任务因内部错误失败。
-schematica.command.printer.print.emerald_suffix=，绿宝石消耗=%d
-schematica.command.printer.print.done=打印机 [%d,%d,%d] 已执行 %s，模式=%s，材料消耗=%d，材料种类=%d%s：放置=%d，清除=%d，清空容器=%d，未变化=%d%s
-schematica.command.printer.print.auto_unload=打印完成后已自动卸载投影。
-schematica.command.printer.undo.usage=用法: /schematica printer undo <x> <y> <z>
-schematica.command.printer.undo.no_snapshot=打印机 [%d,%d,%d] 没有可撤回快照。
-schematica.command.printer.undo.integrity_missing=无法校验打印机 [%d,%d,%d] 的撤回完整性（缺少打印快照）。
-schematica.command.printer.undo.integrity_failed=撤回已阻止，坐标 [%d,%d,%d] 期望为 %s[%d:%d]，实际为 %s[%d:%d]。
-schematica.command.printer.undo.bounds=无法撤回打印机建筑: %s
-schematica.command.printer.undo.done=打印机 [%d,%d,%d] 撤回已恢复 %s: placed=%d, cleared=%d, containersEmptied=%d, unchanged=%d, materialsReturned=%d%s
-schematica.command.printer.provide.usage=用法: /schematica printer provide <x> <y> <z> <itemId> <subtype> [count]
-schematica.command.printer.provide.invalid_item=无效物品ID: %d
-schematica.command.printer.provide.internal=提交材料失败（缺少 world/player/inventory）。
-schematica.command.printer.provide.none=没有移动任何匹配物品。
-schematica.command.printer.provide.done=已向打印机 [%d,%d,%d] 提供 %d x %s。当前存量=%d
-schematica.command.printer.health.usage=用法: /schematica printer health <x> <y> <z>
-schematica.command.printer.health.summary=打印机健康 [%d,%d,%d]: 方块=%s[%d], isPrinter=%s, tile=%s, inventory=%s, 槽位=%d/%d, 存储物品=%d, undoSnapshot=%s
-schematica.command.printer.sync.usage=用法: /schematica printer sync <x> <y> <z>
-schematica.command.printer.emerald_unavailable=绿宝石物品不可用。
+schematica.command.help.line9=打印机命令：/schematica printer print/undo/provide/providefood/health/sync
+
+
+## 打印机专用命令反馈
+schematica.command.printer.usage=用法：/schematica printer <print|undo|provide|providefood|health|sync> …
+schematica.command.printer.print.usage=用法：/schematica printer print <x> <y> <z> [replace|solid|nonair]
+schematica.command.printer.print.no_projection=打印机无可用的投影，请在服务器加载或启用客户端投影上传
+schematica.command.printer.print.blocked=打印被阻止 [%d, %d, %d]：发现 %s[%d:%d]，目标应为 %s[%d:%d]
+schematica.command.printer.not_found=在 [%d, %d, %d] 未找到打印机
+schematica.command.printer.print.rollback=打印已中止，已回滚消耗的材料 %d 个（返还 %d，溢出物已丢弃）
+schematica.command.printer.print.queued=打印机 [%d, %d, %d] 已加入打印任务：%s，模式 %s，预计 %d 个方块
+schematica.command.printer.print.queue_busy=打印机队列正忙，请稍后重试
+schematica.command.printer.print.internal_failed=打印机任务因内部错误失败
+schematica.command.printer.print.emerald_suffix=，消耗绿宝石 %d
+schematica.command.printer.print.done=打印机 [%d, %d, %d] 粘贴完成：%s 模式 %s，消耗材料 %d 种共 %d 个%s → 放置 %d，清除 %d，清空容器 %d，未变化 %d%s
+schematica.command.printer.print.auto_unload=打印完成后已自动卸载投影
+schematica.command.printer.undo.usage=用法：/schematica printer undo <x> <y> <z>
+schematica.command.printer.undo.no_snapshot=打印机 [%d, %d, %d] 无撤销记录
+schematica.command.printer.undo.integrity_missing=无法验证打印机 [%d, %d, %d] 的撤销完整性（缺少打印快照）
+schematica.command.printer.undo.integrity_failed=撤销被阻止于 [%d, %d, %d]：期望 %s[%d:%d]，实际 %s[%d:%d]
+schematica.command.printer.undo.bounds=无法撤销：%s
+schematica.command.printer.undo.done=打印机 [%d, %d, %d] 撤销完成：恢复 %s → 放置 %d，清除 %d，清空容器 %d，未变化 %d，返还材料 %d%s
+schematica.command.printer.provide.usage=用法：/schematica printer provide <x> <y> <z> <物品ID> <子类型> [数量]
+schematica.command.printer.provide.invalid_item=无效物品 ID：%d
+schematica.command.printer.provide.internal=补充失败（世界/玩家/物品栏信息缺失）
+schematica.command.printer.provide.none=未转移任何匹配物品
+schematica.command.printer.provide.done=已向打印机 [%d, %d, %d] 补充 %d 个 %s，当前存储量：%d
+schematica.command.printer.provide_food.usage=用法：/schematica printer providefood <x> <y> <z> [目标饥饿值]
+schematica.command.printer.provide_food.done=已向打印机 [%d, %d, %d] 补充食物：%d 个物品，提供饥饿值 %d
+schematica.command.printer.health.usage=用法：/schematica printer health <x> <y> <z>
+schematica.command.printer.health.summary=打印机 [%d, %d, %d] 状态：方块 %s[%d]，是否为打印机 %s，Tile实体 %s，物品栏 %s，槽位 %d/%d，已存物品 %d 个，撤销快照 %s
+schematica.command.printer.sync.usage=用法：/schematica printer sync <x> <y> <z>
+schematica.command.printer.emerald_unavailable=无法获取绿宝石物品
+schematica.command.printer.food_label=食物
+
+
+## 配置文件
+config.menu.comment.SchematicaSurvival=生存模式投影打印机消耗规则
+config.name.schematicaSurvival.printer.requireEmerald=消耗绿宝石
+config.comment.schematicaSurvival.printer.requireEmerald=是否启用绿宝石消耗
+config.name.schematicaSurvival.printer.blocksPerEmerald=绿宝石对应方块数
+config.comment.schematicaSurvival.printer.blocksPerEmerald=每颗绿宝石可打印的方块数量
+config.name.schematicaSurvival.printer.requireFood=消耗食物
+config.comment.schematicaSurvival.printer.requireFood=是否启用食物(饥饿值)消耗
+config.name.schematicaSurvival.printer.foodHungerMultiplier=食物饥饿值系数
+config.comment.schematicaSurvival.printer.foodHungerMultiplier=最终饥饿值消耗 = 基础值 × 该系数（向下取整）
 schematica.command.printer.txn=[TXN %s][%s] %s
-schematica.command.help.rule=规则: 生存粘贴会消耗背包材料；不复制实体；打印出的容器始终为空。
+schematica.command.help.rule=规则说明：生存模式下粘贴会消耗物品栏材料，不复制实体，打印出的容器均为空

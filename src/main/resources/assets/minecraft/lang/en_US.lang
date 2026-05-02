@@ -181,8 +181,8 @@ schematica.command.help.line5=/schematica paste <creative only, disabled in surv
 schematica.command.help.line6=/schematica save <x1> <y1> <z1> <x2> <y2> <z2> <name>
 schematica.command.help.line7=/schematica create <name> (from stick selection)
 schematica.command.help.line8=/schematica sel status | /schematica sel clear
-schematica.command.help.line9=/schematica printer print <x> <y> <z> [replace|solid|nonair] | /schematica printer undo <x> <y> <z> | /schematica printer provide <x> <y> <z> <itemId> <subtype> [count] | /schematica printer health <x> <y> <z> | /schematica printer sync <x> <y> <z>
-schematica.command.printer.usage=Usage: /schematica printer <print|undo|provide|health|sync> ...
+schematica.command.help.line9=/schematica printer print <x> <y> <z> [replace|solid|nonair] | /schematica printer undo <x> <y> <z> | /schematica printer provide <x> <y> <z> <itemId> <subtype> [count] | /schematica printer providefood <x> <y> <z> [hungerTarget] | /schematica printer health <x> <y> <z> | /schematica printer sync <x> <y> <z>
+schematica.command.printer.usage=Usage: /schematica printer <print|undo|provide|providefood|health|sync> ...
 schematica.command.printer.print.usage=Usage: /schematica printer print <x> <y> <z> [replace|solid|nonair]
 schematica.command.printer.print.no_projection=No projection is available for printer print. Load one on server, or enable printer.clientProjectionUpload.
 schematica.command.printer.print.blocked=Print blocked at [%d,%d,%d]: found %s[%d:%d], target is %s[%d:%d].
@@ -205,9 +205,22 @@ schematica.command.printer.provide.invalid_item=Invalid item id: %d
 schematica.command.printer.provide.internal=Printer provide failed (missing world/player/inventory).
 schematica.command.printer.provide.none=No matching items were moved.
 schematica.command.printer.provide.done=Provided %d x %s to printer [%d,%d,%d]. Stored=%d
+schematica.command.printer.provide_food.usage=Usage: /schematica printer providefood <x> <y> <z> [hungerTarget]
+schematica.command.printer.provide_food.done=Provided food to printer [%d,%d,%d]: items=%d, hunger=%d
 schematica.command.printer.health.usage=Usage: /schematica printer health <x> <y> <z>
 schematica.command.printer.health.summary=Printer health [%d,%d,%d]: block=%s[%d], isPrinter=%s, tile=%s, inventory=%s, slots=%d/%d, storedItems=%d, undoSnapshot=%s
 schematica.command.printer.sync.usage=Usage: /schematica printer sync <x> <y> <z>
 schematica.command.printer.emerald_unavailable=Emerald item is unavailable.
+schematica.command.printer.food_label=Food
+
+config.menu.comment.SchematicaSurvival=Schematica Survival printer cost rules
+config.name.schematicaSurvival.printer.requireEmerald=Require Emerald
+config.comment.schematicaSurvival.printer.requireEmerald=Enable emerald consumption rule
+config.name.schematicaSurvival.printer.blocksPerEmerald=Blocks Per Emerald
+config.comment.schematicaSurvival.printer.blocksPerEmerald=Blocks consumed per emerald
+config.name.schematicaSurvival.printer.requireFood=Require Food
+config.comment.schematicaSurvival.printer.requireFood=Enable food hunger consumption rule
+config.name.schematicaSurvival.printer.foodHungerMultiplier=Food Hunger Multiplier
+config.comment.schematicaSurvival.printer.foodHungerMultiplier=Decimal multiplier in range 0.0 to 5.0. Final cost = floor(base * multiplier)
 schematica.command.printer.txn=[TXN %s][%s] %s
 schematica.command.help.rule=Rule: survival paste consumes inventory materials; no entity copy; printed containers are always empty.

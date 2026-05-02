@@ -30,6 +30,8 @@ import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
 public class GuiSchematicPrinterSelector extends GuiScreen {
+    private static final int FOOD_VIRTUAL_ITEM_ID = -1;
+    private static final int FOOD_VIRTUAL_SUBTYPE = 0;
     private static final int ID_PREV = 1;
     private static final int ID_NEXT = 2;
     private static final int ID_LOAD = 3;
@@ -634,7 +636,39 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
                 emeraldMaterial.required += requiredEmeralds;
             }
         }
+        int baseFoodHunger = 0;
+        for (int x = 0; x < schematic.getWidth(); ++x) {
+            for (int y = 0; y < schematic.getHeight(); ++y) {
+                for (int z = 0; z < schematic.getLength(); ++z) {
+                    Block block = schematic.getBlock(x, y, z);
+                    if (block == null || block.blockID == 0) {
+                        continue;
+                    }
+                    int meta = schematic.getBlockMetadata(x, y, z);
+                    if (skipAlreadyPlaced && world != null) {
+                        int wx = originX + x;
+                        int wy = originY + y;
+                        int wz = originZ + z;
+                        int existingId = world.getBlockId(wx, wy, wz);
+                        int existingMeta = world.getBlockMetadata(wx, wy, wz);
+                        if (existingId == block.blockID && existingMeta == (meta & 0xF)) {
+                            continue;
+                        }
+                    }
+                    float hardness = Math.min(block.getBlockHardness(0), 20.0F);
+                    baseFoodHunger += (int) Math.floor(Math.max(0.0F, hardness));
+                }
+            }
+        }
+        int requiredFoodHunger = SchematicaPrinterConfig.computeRequiredFoodHunger(baseFoodHunger);
+
         this.requiredMaterials.addAll(merged.values());
+        if (requiredFoodHunger > 0) {
+            this.requiredMaterials.add(new RequiredMaterial(
+                    new MaterialKey(FOOD_VIRTUAL_ITEM_ID, FOOD_VIRTUAL_SUBTYPE),
+                    tr("schematica.command.printer.food_label", "Food"),
+                    requiredFoodHunger));
+        }
     }
 
     private void confirmSelectedProjection(boolean fromConfirmKey) {
@@ -978,7 +1012,9 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         }
 
         Map<MaterialKey, Integer> playerNow = collectMaterialCounts(this.mc != null && this.mc.thePlayer != null ? this.mc.thePlayer.inventory : null);
-        int availableNow = playerNow.containsKey(entry.key) ? playerNow.get(entry.key) : 0;
+        int availableNow = entry.key.itemId == FOOD_VIRTUAL_ITEM_ID
+                ? collectFoodHungerValue(this.mc != null && this.mc.thePlayer != null ? this.mc.thePlayer.inventory : null)
+                : (playerNow.containsKey(entry.key) ? playerNow.get(entry.key) : 0);
         if (availableNow <= 0) {
             this.statusLine = tr("gui.schematica_printer.supply.no_player_item", "You do not have this item in inventory.");
             refreshSupplyEntries(true);
@@ -997,9 +1033,15 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         }
         this.lastSupplyRequestAtMs = now;
 
-        runCommand("schematica printer provide "
-                + this.blockX + " " + this.blockY + " " + this.blockZ + " "
-                + entry.key.itemId + " " + entry.key.subtype + " " + request);
+        if (entry.key.itemId == FOOD_VIRTUAL_ITEM_ID) {
+            runCommand("schematica printer providefood "
+                    + this.blockX + " " + this.blockY + " " + this.blockZ + " "
+                    + request);
+        } else {
+            runCommand("schematica printer provide "
+                    + this.blockX + " " + this.blockY + " " + this.blockZ + " "
+                    + entry.key.itemId + " " + entry.key.subtype + " " + request);
+        }
         this.lastSupplyRefreshAtMs = 0L;
         this.statusLine = trf("gui.schematica_printer.supply.provide_sent", "Supply requested: %s x%d", entry.displayName, request);
         refreshSupplyEntries(true);
@@ -1035,11 +1077,21 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             stored = collectMaterialCounts(printerInventory);
         }
         Map<MaterialKey, Integer> player = collectMaterialCounts(this.mc != null && this.mc.thePlayer != null ? this.mc.thePlayer.inventory : null);
+        int playerFoodHunger = collectFoodHungerValue(this.mc != null && this.mc.thePlayer != null ? this.mc.thePlayer.inventory : null);
+        int storedFoodHunger = collectFoodHungerValue(stored);
+        if (storedFoodHunger <= 0) {
+            storedFoodHunger = collectFoodHungerValue(printerInventory);
+        }
 
         for (RequiredMaterial required : this.requiredMaterials) {
             SupplyEntry entry = new SupplyEntry(required.key, required.displayName, required.required);
-            entry.stored = stored.containsKey(required.key) ? stored.get(required.key) : 0;
-            entry.playerAvailable = player.containsKey(required.key) ? player.get(required.key) : 0;
+            if (required.key.itemId == FOOD_VIRTUAL_ITEM_ID) {
+                entry.stored = storedFoodHunger;
+                entry.playerAvailable = playerFoodHunger;
+            } else {
+                entry.stored = stored.containsKey(required.key) ? stored.get(required.key) : 0;
+                entry.playerAvailable = player.containsKey(required.key) ? player.get(required.key) : 0;
+            }
             entry.missing = Math.max(0, entry.required - entry.stored);
             this.supplyEntries.add(entry);
         }
@@ -1110,6 +1162,59 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
             counts.put(key, old == null ? stack.stackSize : old + stack.stackSize);
         }
         return counts;
+    }
+
+    private int collectFoodHungerValue(IInventory inventory) {
+        if (inventory == null) {
+            return 0;
+        }
+        int total = 0;
+        for (int slot = 0; slot < inventory.getSizeInventory(); ++slot) {
+            ItemStack stack = inventory.getStackInSlot(slot);
+            if (stack == null || stack.stackSize <= 0 || stack.itemID <= 0 || stack.itemID >= Item.itemsList.length) {
+                continue;
+            }
+            Item item = Item.itemsList[stack.itemID];
+            if (item == null) {
+                continue;
+            }
+            int value = Math.max(0, item.getSatiation(null)) + Math.max(0, item.getNutrition());
+            if (value <= 0) {
+                continue;
+            }
+            total += value * stack.stackSize;
+        }
+        return total;
+    }
+
+    private int collectFoodHungerValue(Map<MaterialKey, Integer> materialCounts) {
+        if (materialCounts == null || materialCounts.isEmpty()) {
+            return 0;
+        }
+        int total = 0;
+        for (Map.Entry<MaterialKey, Integer> entry : materialCounts.entrySet()) {
+            if (entry == null || entry.getKey() == null || entry.getValue() == null) {
+                continue;
+            }
+            int count = entry.getValue().intValue();
+            if (count <= 0) {
+                continue;
+            }
+            MaterialKey key = entry.getKey();
+            if (key.itemId <= 0 || key.itemId >= Item.itemsList.length) {
+                continue;
+            }
+            Item item = Item.itemsList[key.itemId];
+            if (item == null) {
+                continue;
+            }
+            int value = Math.max(0, item.getSatiation(null)) + Math.max(0, item.getNutrition());
+            if (value <= 0) {
+                continue;
+            }
+            total += value * count;
+        }
+        return total;
     }
 
     private Map<MaterialKey, Integer> collectStoredCountsFromServerSnapshot(long now) {
@@ -1409,8 +1514,13 @@ public class GuiSchematicPrinterSelector extends GuiScreen {
         private int required;
 
         private RequiredMaterial(MaterialKey key, String displayName) {
+            this(key, displayName, 0);
+        }
+
+        private RequiredMaterial(MaterialKey key, String displayName, int required) {
             this.key = key;
             this.displayName = displayName;
+            this.required = required;
         }
     }
 

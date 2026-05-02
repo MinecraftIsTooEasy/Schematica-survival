@@ -1,10 +1,18 @@
 package com.github.lunatrius.schematica;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import net.minecraft.Minecraft;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -12,12 +20,17 @@ import java.util.Properties;
 import java.util.Set;
 
 public final class SchematicaPrinterConfig {
+    private static final Gson PRETTY_GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String FILE_NAME = "schematica_survival.properties";
     private static final String KEY_REQUIRE_EMERALD = "printer.requireEmerald";
     private static final String KEY_BLOCKS_PER_EMERALD = "printer.blocksPerEmerald";
+    private static final String KEY_REQUIRE_FOOD = "printer.requireFood";
+    private static final String KEY_FOOD_HUNGER_MULTIPLIER = "printer.foodHungerMultiplier";
     private static final String KEY_AUTO_UNLOAD_PROJECTION_AFTER_PRINT = "printer.autoUnloadProjectionAfterPrint";
     private static final String KEY_CLIENT_PROJECTION_UPLOAD = "printer.clientProjectionUpload";
     private static final String KEY_SCHEMATIC_STRICT_REMAP = "schematic.strictRemap";
+    private static final String KEY_PRINTER_ROTATION_USE_BLOCK_FACING_API = "printer.rotation.useBlockFacingApi";
+    private static final String KEY_PRINTER_ROTATION_DEBUG_LOG = "printer.rotation.debugLog";
     private static final String KEY_PROJECTION_GHOST_ALPHA_SOLID = "projection.ghostAlphaSolid";
     private static final String KEY_PROJECTION_GHOST_ALPHA_TRANSLUCENT = "projection.ghostAlphaTranslucent";
     private static final String KEY_PROJECTION_LINE_ALPHA = "projection.lineAlpha";
@@ -27,11 +40,21 @@ public final class SchematicaPrinterConfig {
     private static final String KEY_PRINTER_GUI_MIRROR_X_SUFFIX = ".mirrorX";
     private static final String KEY_PRINTER_GUI_MIRROR_Z_SUFFIX = ".mirrorZ";
     private static final String KEY_PRINTER_GUI_LAST_APPLIED_SIGNATURE_SUFFIX = ".lastAppliedSignature";
+    // ManyLib-compatible keys (dot + camelCase naming rule)
+    private static final String MANYLIB_KEY_REQUIRE_EMERALD = "schematicaSurvival.printer.requireEmerald";
+    private static final String MANYLIB_KEY_BLOCKS_PER_EMERALD = "schematicaSurvival.printer.blocksPerEmerald";
+    private static final String MANYLIB_KEY_REQUIRE_FOOD = "schematicaSurvival.printer.requireFood";
+    private static final String MANYLIB_KEY_FOOD_HUNGER_MULTIPLIER = "schematicaSurvival.printer.foodHungerMultiplier";
+    private static final String MANYLIB_SECTION_VALUES = "Values";
     private static final boolean DEFAULT_REQUIRE_EMERALD = true;
     private static final int DEFAULT_BLOCKS_PER_EMERALD = 32;
+    private static final boolean DEFAULT_REQUIRE_FOOD = false;
+    private static final float DEFAULT_FOOD_HUNGER_MULTIPLIER = 1.0F;
     private static final boolean DEFAULT_AUTO_UNLOAD_PROJECTION_AFTER_PRINT = true;
     private static final boolean DEFAULT_CLIENT_PROJECTION_UPLOAD = false;
     private static final boolean DEFAULT_SCHEMATIC_STRICT_REMAP = false;
+    private static final boolean DEFAULT_PRINTER_ROTATION_USE_BLOCK_FACING_API = true;
+    private static final boolean DEFAULT_PRINTER_ROTATION_DEBUG_LOG = false;
     private static final int DEFAULT_EMERALD_ITEM_ID = 388;
     private static final int DEFAULT_EMERALD_SUBTYPE = 0;
     private static final float DEFAULT_PROJECTION_GHOST_ALPHA_SOLID = 0.35F;
@@ -40,9 +63,13 @@ public final class SchematicaPrinterConfig {
 
     private static boolean requireEmerald = DEFAULT_REQUIRE_EMERALD;
     private static int blocksPerEmerald = DEFAULT_BLOCKS_PER_EMERALD;
+    private static boolean requireFood = DEFAULT_REQUIRE_FOOD;
+    private static float foodHungerMultiplier = DEFAULT_FOOD_HUNGER_MULTIPLIER;
     private static boolean autoUnloadProjectionAfterPrint = DEFAULT_AUTO_UNLOAD_PROJECTION_AFTER_PRINT;
     private static boolean clientProjectionUpload = DEFAULT_CLIENT_PROJECTION_UPLOAD;
     private static boolean schematicStrictRemap = DEFAULT_SCHEMATIC_STRICT_REMAP;
+    private static boolean printerRotationUseBlockFacingApi = DEFAULT_PRINTER_ROTATION_USE_BLOCK_FACING_API;
+    private static boolean printerRotationDebugLog = DEFAULT_PRINTER_ROTATION_DEBUG_LOG;
     private static float projectionGhostAlphaSolid = DEFAULT_PROJECTION_GHOST_ALPHA_SOLID;
     private static float projectionGhostAlphaTranslucent = DEFAULT_PROJECTION_GHOST_ALPHA_TRANSLUCENT;
     private static float projectionLineAlpha = DEFAULT_PROJECTION_LINE_ALPHA;
@@ -72,6 +99,10 @@ public final class SchematicaPrinterConfig {
 
         requireEmerald = parseBoolean(properties.getProperty(KEY_REQUIRE_EMERALD), DEFAULT_REQUIRE_EMERALD);
         blocksPerEmerald = clampPositive(parseInt(properties.getProperty(KEY_BLOCKS_PER_EMERALD), DEFAULT_BLOCKS_PER_EMERALD), DEFAULT_BLOCKS_PER_EMERALD);
+        requireFood = parseBoolean(properties.getProperty(KEY_REQUIRE_FOOD), DEFAULT_REQUIRE_FOOD);
+        foodHungerMultiplier = clampNonNegative(
+                parseFloat(properties.getProperty(KEY_FOOD_HUNGER_MULTIPLIER), DEFAULT_FOOD_HUNGER_MULTIPLIER),
+                DEFAULT_FOOD_HUNGER_MULTIPLIER);
         autoUnloadProjectionAfterPrint = parseBoolean(
                 properties.getProperty(KEY_AUTO_UNLOAD_PROJECTION_AFTER_PRINT),
                 DEFAULT_AUTO_UNLOAD_PROJECTION_AFTER_PRINT);
@@ -81,6 +112,12 @@ public final class SchematicaPrinterConfig {
         schematicStrictRemap = parseBoolean(
                 properties.getProperty(KEY_SCHEMATIC_STRICT_REMAP),
                 DEFAULT_SCHEMATIC_STRICT_REMAP);
+        printerRotationUseBlockFacingApi = parseBoolean(
+                properties.getProperty(KEY_PRINTER_ROTATION_USE_BLOCK_FACING_API),
+                DEFAULT_PRINTER_ROTATION_USE_BLOCK_FACING_API);
+        printerRotationDebugLog = parseBoolean(
+                properties.getProperty(KEY_PRINTER_ROTATION_DEBUG_LOG),
+                DEFAULT_PRINTER_ROTATION_DEBUG_LOG);
         projectionGhostAlphaSolid = clampAlpha(
                 parseFloat(properties.getProperty(KEY_PROJECTION_GHOST_ALPHA_SOLID), DEFAULT_PROJECTION_GHOST_ALPHA_SOLID),
                 DEFAULT_PROJECTION_GHOST_ALPHA_SOLID);
@@ -90,6 +127,8 @@ public final class SchematicaPrinterConfig {
         projectionLineAlpha = clampAlpha(
                 parseFloat(properties.getProperty(KEY_PROJECTION_LINE_ALPHA), DEFAULT_PROJECTION_LINE_ALPHA),
                 DEFAULT_PROJECTION_LINE_ALPHA);
+
+        loadManyLibCompatibleValues();
         loadPrinterGuiState(properties);
 
         save();
@@ -103,6 +142,14 @@ public final class SchematicaPrinterConfig {
         return blocksPerEmerald;
     }
 
+    public static synchronized boolean isRequireFoodEnabled() {
+        return requireFood;
+    }
+
+    public static synchronized float getFoodHungerMultiplier() {
+        return foodHungerMultiplier;
+    }
+
     public static synchronized boolean isAutoUnloadProjectionAfterPrintEnabled() {
         return autoUnloadProjectionAfterPrint;
     }
@@ -113,6 +160,14 @@ public final class SchematicaPrinterConfig {
 
     public static synchronized boolean isSchematicStrictRemapEnabled() {
         return schematicStrictRemap;
+    }
+
+    public static synchronized boolean isPrinterRotationUseBlockFacingApiEnabled() {
+        return printerRotationUseBlockFacingApi;
+    }
+
+    public static synchronized boolean isPrinterRotationDebugLogEnabled() {
+        return printerRotationDebugLog;
     }
 
     public static synchronized int getEmeraldItemId() {
@@ -129,6 +184,32 @@ public final class SchematicaPrinterConfig {
         }
         int divisor = Math.max(1, blocksPerEmerald);
         return (requiredBlocks + divisor - 1) / divisor;
+    }
+
+    public static synchronized int computeRequiredFoodHunger(int baseHungerCost) {
+        if (!requireFood || baseHungerCost <= 0) {
+            return 0;
+        }
+        double scaled = Math.floor(baseHungerCost * (double) Math.max(0.0F, foodHungerMultiplier));
+        if (scaled <= 0.0D) {
+            return 0;
+        }
+        if (scaled > Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return (int) scaled;
+    }
+
+    public static synchronized void setPrinterCostRules(
+            boolean newRequireEmerald,
+            int newBlocksPerEmerald,
+            boolean newRequireFood,
+            float newFoodHungerMultiplier) {
+        requireEmerald = newRequireEmerald;
+        blocksPerEmerald = clampPositive(newBlocksPerEmerald, DEFAULT_BLOCKS_PER_EMERALD);
+        requireFood = newRequireFood;
+        foodHungerMultiplier = clampNonNegative(newFoodHungerMultiplier, DEFAULT_FOOD_HUNGER_MULTIPLIER);
+        save();
     }
 
     public static synchronized float getProjectionGhostAlphaSolid() {
@@ -239,6 +320,35 @@ public final class SchematicaPrinterConfig {
         return new File(configDir, FILE_NAME);
     }
 
+    private static File resolveConfigDir() {
+        File base = null;
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc != null) {
+            base = mc.mcDataDir;
+        }
+        if (base == null) {
+            base = new File(".");
+        }
+        File configDir = new File(base, "config");
+        if (!configDir.exists()) {
+            configDir.mkdirs();
+        }
+        return configDir;
+    }
+
+    private static File resolveManyLibCompatFile() {
+        File configDir = resolveConfigDir();
+        File preferred = new File(configDir, "schematica_survival.json");
+        if (preferred.exists()) {
+            return preferred;
+        }
+        File alt = new File(configDir, "SchematicaSurvival.json");
+        if (alt.exists()) {
+            return alt;
+        }
+        return preferred;
+    }
+
     private static boolean parseBoolean(String raw, boolean fallback) {
         if (raw == null) {
             return fallback;
@@ -279,7 +389,7 @@ public final class SchematicaPrinterConfig {
         if (value <= 0) {
             return fallback;
         }
-        return Math.min(1_000_000, value);
+        return Math.min(128, value);
     }
 
     private static float clampAlpha(float value, float fallback) {
@@ -291,6 +401,19 @@ public final class SchematicaPrinterConfig {
         }
         if (value > 1.0F) {
             return 1.0F;
+        }
+        return value;
+    }
+
+    private static float clampNonNegative(float value, float fallback) {
+        if (Float.isNaN(value) || Float.isInfinite(value)) {
+            return fallback;
+        }
+        if (value < 0.0F) {
+            return 0.0F;
+        }
+        if (value > 5.0F) {
+            return 5.0F;
         }
         return value;
     }
@@ -432,9 +555,13 @@ public final class SchematicaPrinterConfig {
         Properties properties = new Properties();
         properties.setProperty(KEY_REQUIRE_EMERALD, Boolean.toString(requireEmerald));
         properties.setProperty(KEY_BLOCKS_PER_EMERALD, Integer.toString(blocksPerEmerald));
+        properties.setProperty(KEY_REQUIRE_FOOD, Boolean.toString(requireFood));
+        properties.setProperty(KEY_FOOD_HUNGER_MULTIPLIER, Float.toString(foodHungerMultiplier));
         properties.setProperty(KEY_AUTO_UNLOAD_PROJECTION_AFTER_PRINT, Boolean.toString(autoUnloadProjectionAfterPrint));
         properties.setProperty(KEY_CLIENT_PROJECTION_UPLOAD, Boolean.toString(clientProjectionUpload));
         properties.setProperty(KEY_SCHEMATIC_STRICT_REMAP, Boolean.toString(schematicStrictRemap));
+        properties.setProperty(KEY_PRINTER_ROTATION_USE_BLOCK_FACING_API, Boolean.toString(printerRotationUseBlockFacingApi));
+        properties.setProperty(KEY_PRINTER_ROTATION_DEBUG_LOG, Boolean.toString(printerRotationDebugLog));
         properties.setProperty(KEY_PROJECTION_GHOST_ALPHA_SOLID, Float.toString(projectionGhostAlphaSolid));
         properties.setProperty(KEY_PROJECTION_GHOST_ALPHA_TRANSLUCENT, Float.toString(projectionGhostAlphaTranslucent));
         properties.setProperty(KEY_PROJECTION_LINE_ALPHA, Float.toString(projectionLineAlpha));
@@ -477,5 +604,158 @@ public final class SchematicaPrinterConfig {
             }
         } catch (IOException ignored) {
         }
+
+        saveManyLibCompatibleValues();
+    }
+
+    private static void loadManyLibCompatibleValues() {
+        File file = resolveManyLibCompatFile();
+        if (file == null || !file.exists()) {
+            return;
+        }
+        try {
+            java.io.Reader reader = new java.io.InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8);
+            JsonElement rootElement;
+            try {
+                rootElement = new JsonParser().parse(reader);
+            } finally {
+                reader.close();
+            }
+            if (rootElement == null || !rootElement.isJsonObject()) {
+                return;
+            }
+            JsonObject root = rootElement.getAsJsonObject();
+            JsonObject values = root.has(MANYLIB_SECTION_VALUES) && root.get(MANYLIB_SECTION_VALUES).isJsonObject()
+                    ? root.getAsJsonObject(MANYLIB_SECTION_VALUES)
+                    : null;
+            if (values == null) {
+                return;
+            }
+            requireEmerald = readManyLibBoolean(values, MANYLIB_KEY_REQUIRE_EMERALD, requireEmerald);
+            blocksPerEmerald = clampPositive(readManyLibInt(values, MANYLIB_KEY_BLOCKS_PER_EMERALD, blocksPerEmerald), DEFAULT_BLOCKS_PER_EMERALD);
+            requireFood = readManyLibBoolean(values, MANYLIB_KEY_REQUIRE_FOOD, requireFood);
+            foodHungerMultiplier = clampNonNegative(readManyLibFloat(values, MANYLIB_KEY_FOOD_HUNGER_MULTIPLIER, foodHungerMultiplier), DEFAULT_FOOD_HUNGER_MULTIPLIER);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void saveManyLibCompatibleValues() {
+        File file = resolveManyLibCompatFile();
+        if (file == null) {
+            return;
+        }
+        try {
+            JsonObject root;
+            if (file.exists()) {
+                java.io.Reader reader = new java.io.InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8);
+                JsonElement existing;
+                try {
+                    existing = new JsonParser().parse(reader);
+                } finally {
+                    reader.close();
+                }
+                root = existing != null && existing.isJsonObject() ? existing.getAsJsonObject() : new JsonObject();
+            } else {
+                root = new JsonObject();
+            }
+            JsonObject values = root.has(MANYLIB_SECTION_VALUES) && root.get(MANYLIB_SECTION_VALUES).isJsonObject()
+                    ? root.getAsJsonObject(MANYLIB_SECTION_VALUES)
+                    : new JsonObject();
+            root.add(MANYLIB_SECTION_VALUES, values);
+
+            writeManyLibValue(values, MANYLIB_KEY_REQUIRE_EMERALD, Boolean.valueOf(requireEmerald));
+            writeManyLibValue(values, MANYLIB_KEY_BLOCKS_PER_EMERALD, Integer.valueOf(blocksPerEmerald));
+            writeManyLibValue(values, MANYLIB_KEY_REQUIRE_FOOD, Boolean.valueOf(requireFood));
+            writeManyLibValue(values, MANYLIB_KEY_FOOD_HUNGER_MULTIPLIER, Float.valueOf(foodHungerMultiplier));
+
+            java.io.Writer writer = new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8);
+            try {
+                writer.write(PRETTY_GSON.toJson(root));
+            } finally {
+                writer.close();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void writeManyLibValue(JsonObject values, String key, Object value) {
+        if (values == null || key == null || key.isEmpty() || value == null) {
+            return;
+        }
+        JsonObject entry = values.has(key) && values.get(key).isJsonObject()
+                ? values.getAsJsonObject(key)
+                : new JsonObject();
+        if (value instanceof Boolean) {
+            entry.add("value", new JsonPrimitive((Boolean) value));
+        } else if (value instanceof Integer) {
+            entry.add("value", new JsonPrimitive((Integer) value));
+            entry.add("useSlider", new JsonPrimitive(false));
+        } else if (value instanceof Float) {
+            entry.add("value", new JsonPrimitive((Float) value));
+            entry.add("useSlider", new JsonPrimitive(false));
+        }
+        values.add(key, entry);
+    }
+
+    private static boolean readManyLibBoolean(JsonObject values, String key, boolean fallback) {
+        JsonObject entry = readManyLibEntry(values, key);
+        if (entry == null || !entry.has("value")) {
+            return fallback;
+        }
+        JsonElement value = entry.get("value");
+        if (value == null || !value.isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            return value.getAsBoolean();
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    private static int readManyLibInt(JsonObject values, String key, int fallback) {
+        JsonObject entry = readManyLibEntry(values, key);
+        if (entry == null || !entry.has("value")) {
+            return fallback;
+        }
+        JsonElement value = entry.get("value");
+        if (value == null || !value.isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            return value.getAsInt();
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    private static float readManyLibFloat(JsonObject values, String key, float fallback) {
+        JsonObject entry = readManyLibEntry(values, key);
+        if (entry == null || !entry.has("value")) {
+            return fallback;
+        }
+        JsonElement value = entry.get("value");
+        if (value == null || !value.isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            return value.getAsFloat();
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    private static JsonObject readManyLibEntry(JsonObject values, String key) {
+        if (values == null || key == null || key.isEmpty()) {
+            return null;
+        }
+        if (!values.has(key)) {
+            return null;
+        }
+        JsonElement raw = values.get(key);
+        if (raw == null || !raw.isJsonObject()) {
+            return null;
+        }
+        return raw.getAsJsonObject();
     }
 }

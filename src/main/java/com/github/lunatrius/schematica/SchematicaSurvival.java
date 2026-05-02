@@ -13,6 +13,7 @@ public class SchematicaSurvival implements ModInitializer {
     public void onInitialize() {
         ModResourceManager.addResourcePackDomain(MOD_ID);
         SchematicaPrinterConfig.load();
+        ManyLibPrinterConfigBridge.initializeIfPresent();
         SchematicaPrinterNetworking.registerPacketReaders();
         SurvivalSchematicaEventListener survivalListener = new SurvivalSchematicaEventListener();
         MITEEvents.MITE_EVENT_BUS.register(new SchematicaRegistryEventListener());
